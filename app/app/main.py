@@ -37,5 +37,7 @@ def password():
             return "Your password seems to be safe" 
     return render_template("password.html") 
  
-if __name__ == '__main__': 
-    app.run(port=8080, host='0.0.0.0') 
+if __name__ == '__main__':
+    # Serveur de développement Flask, uniquement en local.
+    # En production, l'application est servie par Gunicorn (gunicorn.conf.py).
+    app.run(port=8080, host='127.0.0.1') 
