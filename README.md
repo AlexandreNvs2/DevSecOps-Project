@@ -6,15 +6,18 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 
 1. [Contenu du dépôt](#contenu-du-dépôt)
 2. [Gestion sécurisée du versioning](#gestion-sécurisée-du-versioning)
-3. Sécurisation du code source *(à venir)*
-4. Image Docker et pipeline CI *(à venir)*
+3. [Sécurisation du code source](#sécurisation-du-code-source) *(en cours)*
+4. Image Docker et pipeline CI *(en cours : analyses du code en place)*
 5. Déploiement sécurisé sur AWS *(à venir)*
 6. Stockage sécurisé des mots de passe *(à venir)*
 7. Architecture et cycle de vie sécurisé *(à venir)*
 
 ## Contenu du dépôt
 
-- `app/` : application Flask de départ (vérification d'un mot de passe dans les listes SecLists).
+- `app/app/main.py` : application Flask (vérification d'un mot de passe dans les listes SecLists).
+- `app/app/data/` : listes SecLists embarquées (500 et 10 000 mots de passe les plus courants).
+- `app/app/requirements.txt` : dépendances Python, versions figées.
+- `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
 
 ## Gestion sécurisée du versioning
 
@@ -78,3 +81,67 @@ Format : `[TYPE]-> description courte`
 Pour une correction de vulnérabilité, le message cite l'identifiant concerné (CWE, PYSEC, règle Bandit ou Semgrep) et, si une issue existe, la référence en seconde ligne (`Closes #N`).
 
 Les deux commits de documentation du début (`docs: ...`) sont antérieurs à l'adoption de cette convention.
+
+## Sécurisation du code source
+
+### Démarche
+
+1. La pipeline CI a été mise en place **avant** toute correction : sa première exécution sur le code d'origine (PR #2, run CI #1) a échoué sur les 4 analyses et sert de constat initial.
+2. Chaque vulnérabilité est corrigée dans un commit dédié, sur la branche `fix/audit-code`. À chaque push, la pipeline se relance et montre l'effet de la correction.
+3. Les points que les outils ne voient pas ont été relevés par une relecture manuelle du code.
+
+### Analyses automatiques (pipeline CI)
+
+Fichier : `.github/workflows/ci.yml`. La pipeline s'exécute à chaque pull request vers `main` et à chaque push sur `main`.
+
+| Job | Outil | Type d'analyse | Ce qu'il vérifie |
+|---|---|---|---|
+| Lint (Flake8) | Flake8 | qualité | style et erreurs de syntaxe (PEP 8) |
+| SAST (Bandit) | Bandit | SAST | failles de sécurité connues dans le code Python |
+| SAST (Semgrep) | Semgrep (`p/python`, `p/flask`) | SAST | règles de sécurité Python et spécifiques à Flask |
+| SCA (pip-audit) | pip-audit | SCA | vulnérabilités connues (CVE, PYSEC) dans les dépendances |
+
+Choix de configuration :
+
+- `permissions: contents: read` : le jeton de la pipeline ne peut que lire le dépôt (moindre privilège).
+- `concurrency` avec `cancel-in-progress` : un nouveau push annule l'exécution en cours sur la même branche ; seul le résultat du dernier commit compte.
+- Jobs indépendants et parallèles : un échec est immédiatement attribuable à un outil.
+- Semgrep tourne dans son image Docker officielle (il ne fonctionne pas nativement sous Windows).
+- En complément, **Dependabot** surveille en continu les dépendances du dépôt et ouvre des alertes dans l'onglet *Security*.
+
+### Constat initial
+
+| # | Vulnérabilité | Détectée par | Identifiant | Gravité |
+|---|---|---|---|---|
+| 1 | Flask 2.2.2 vulnérable | pip-audit, Dependabot | PYSEC-2023-62, PYSEC-2026-2151 | haute |
+| 2 | Requêtes HTTP sans timeout | Bandit | B113, CWE-400 | moyenne |
+| 3 | Téléchargement des listes à chaque requête (déni de service, dépendance à un site externe) | relecture | CWE-400 | moyenne |
+| 4 | Vérification par sous-chaîne : `"a"` déclaré « mauvais mot de passe » | relecture | logique | moyenne |
+| 5 | Écoute sur toutes les interfaces, serveur de développement Flask | Bandit, Semgrep | B104, CWE-605 | moyenne |
+| 6 | Champ mot de passe en clair (`type="text"`) | relecture | CWE-549 | faible |
+| 7 | Formulaire envoyé vers une URL fixe en HTTP | relecture | CWE-319 | faible |
+| 8 | Aucune protection CSRF sur le formulaire | relecture | CWE-352 | moyenne |
+| 9 | Aucune validation de l'entrée (vide, longueur) | relecture | CWE-20 | faible |
+| 10 | Dépendance `requests` utilisée mais non déclarée | relecture | — | faible |
+| 11 | 74 écarts de style (indentation, espaces, longueur de ligne) | Flake8 | PEP 8 | — |
+
+### Corrections
+
+| # | Correction | Commit |
+|---|---|---|
+| 1 | Flask mis à jour en **3.1.3** (version corrigeant les deux vulnérabilités), version figée avec `==`. Le job SCA passe au vert. | `[FIX]-> Flask 3.1.3 (PYSEC-2023-62, PYSEC-2026-2151)` |
+| 2, 3, 4, 10 | Listes SecLists **embarquées** dans `app/app/data/` et chargées une seule fois au démarrage dans un `frozenset`, avec une **comparaison exacte**. Plus aucun appel réseau, donc plus de `requests` (dépendance retirée). | `[FIX]-> listes SecLists embarquées, comparaison exacte` |
+
+Détails de la correction des listes :
+
+- Les fichiers proviennent d'un **commit figé** de SecLists (`913b327317496d062bcc7cace524aaad8a693be2`) et non de la branche `master`, qui peut changer à tout moment.
+- Empreintes SHA-256 vérifiées au téléchargement :
+
+  | Fichier | SHA-256 |
+  |---|---|
+  | `500-worst-passwords.txt` | `91ae15ff637c9187aa102dc180952840523a5eed024392c5d038e0305e658608` |
+  | `10k-most-common.txt` | `68782d6a4a19a4768d5f15dd66bd534e7a33055cc755411e33f16d18c50fdcce` |
+
+- Vérifié : `password` est détecté (liste des 500), `1124` est détecté (liste des 10 000), `a` n'est plus un faux positif.
+
+Les points 5 à 9 et 11 sont en cours de traitement.
