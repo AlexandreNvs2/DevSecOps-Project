@@ -1,6 +1,7 @@
 """Configuration Gunicorn, serveur WSGI de production de l'application.
 
-Lancement : gunicorn main:app (depuis app/app/, ce fichier est lu automatiquement).
+Lancement : gunicorn main:app, depuis app/app/
+(ce fichier est lu automatiquement).
 """
 import os
 
