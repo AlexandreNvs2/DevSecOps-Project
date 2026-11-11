@@ -13,45 +13,133 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE: password-checker:${{ github.sha }}
+
+# Actions tierces figées par empreinte de commit (SHA) et non par tag :
+# un tag peut être déplacé vers du code malveillant, un SHA non.
+# Outils figés par version : un résultat de scan est reproductible.
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Analyse du code source
+  # ---------------------------------------------------------------------------
   lint:
     name: Lint (Flake8)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.12"
-      - run: pip install flake8
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install flake8==7.5.0
       - run: flake8 app/
 
   sast-bandit:
     name: SAST (Bandit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.12"
-      - run: pip install bandit
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install bandit==1.9.4
       - run: bandit -r app/
 
   sast-semgrep:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep
+      image: semgrep/semgrep:1.185.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: semgrep scan --config p/python --config p/flask --error app/
 
   sca:
     name: SCA (pip-audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: "3.12"
-      - run: pip install pip-audit
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install pip-audit==2.10.1
       - run: pip-audit -r app/app/requirements.txt
+
+  # ---------------------------------------------------------------------------
+  # Image Docker : lint, construction, tests, analyses de sécurité
+  # ---------------------------------------------------------------------------
+  dockerfile-lint:
+    name: Lint Dockerfile (Hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile
+
+  build:
+    name: Build (image Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build --pull --no-cache -t "$IMAGE" .
+      - run: docker save "$IMAGE" -o image.tar
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: image.tar
+          retention-days: 1
+
+  image-test:
+    name: Tests du conteneur
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+      - run: docker load -i image.tar
+      - run: bash tests/container/smoke_test.sh "$IMAGE"
+
+  image-trivy:
+    name: Scan image (Trivy)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+      - name: Vulnérabilités HIGH et CRITICAL corrigeables
+        run: >
+          docker run --rm -v "$PWD:/work" aquasec/trivy:0.76.2
+          image --input /work/image.tar
+          --severity HIGH,CRITICAL --ignore-unfixed
+          --exit-code 1 --no-progress
+
+  image-dockle:
+    name: Scan image (Dockle)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+      - name: Bonnes pratiques (CIS Docker Benchmark)
+        run: >
+          docker run --rm -v "$PWD:/work" goodwithtech/dockle:v0.4.15
+          --input /work/image.tar
+          --exit-code 1 --exit-level warn
