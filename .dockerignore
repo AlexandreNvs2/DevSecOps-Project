@@ -1,0 +1,6 @@
+# Liste blanche : seul le code de l'application entre dans l'image.
+# Tout le reste (.git, .venv, .github, README, secrets éventuels) est exclu.
+**
+!app/app/
+**/__pycache__/
+**/*.pyc
