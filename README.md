@@ -243,9 +243,11 @@ L'image est construite en **deux étapes** (*multi-stage build*) à partir d'une
 |---|---|---|
 | Image de base minimale | `python:3.13.18-slim-trixie` | moins de paquets système, donc moins de vulnérabilités et de surface d'attaque |
 | Base figée par **digest** | `@sha256:e48f59cd…` | l'image construite est toujours la même ; une image modifiée sur le registre ne correspondrait plus à l'empreinte |
-| Utilisateur dédié **non root** | `app`, uid 10001, sans shell (`nologin`) ni répertoire personnel | un attaquant qui prendrait le contrôle de l'application n'aurait aucun privilège |
+| Utilisateur dédié **non root** | `app`, uid 10001, sans shell (`nologin`) ni répertoire personnel ; déclaré par identifiant numérique (`USER 10001:10001`) | un attaquant qui prendrait le contrôle de l'application n'aurait aucun privilège ; l'identifiant numérique permet de vérifier « non root » sans lire `/etc/passwd` (Hadolint DL3066) |
 | Code en lecture seule | fichiers appartenant à `root`, l'utilisateur `app` ne peut que les lire | l'application ne peut pas modifier son propre code |
 | **pip retiré** de l'image finale | désinstallé du système et de l'environnement virtuel | rien ne peut être installé dans le conteneur en production |
+| Bits **setuid/setgid retirés** | `find / -xdev -perm /6000 -exec chmod a-s` | aucun binaire (`su`, `passwd`, `mount`…) ne peut s'exécuter avec les droits root |
+| Correctifs Debian appliqués | `zlib1g` mis à jour en version corrigée figée | voir les corrections ci-dessous |
 | Pas de cache pip | `--no-cache-dir` | image plus petite, pas de fichiers inutiles |
 | Secrets absents de l'image | `SECRET_KEY` fournie au lancement uniquement | une image publiée ou volée ne contient aucun secret |
 | Serveur de production | `CMD ["gunicorn", "main:app"]`, `GUNICORN_BIND=0.0.0.0:8080` | voir la correction du point 5 ; seul le conteneur ouvre l'écoute |
@@ -271,7 +273,7 @@ L'image est construite **une seule fois** (`docker build --pull --no-cache`), ex
 | Build | Docker | l'image se construit | erreur de construction |
 | Tests du conteneur | `tests/container/smoke_test.sh` | fonctionnement et durcissement réels du conteneur (voir ci-dessous) | un test échoue |
 | Scan image (Trivy) | Trivy `0.76.2` | vulnérabilités des paquets système et Python de l'image | vulnérabilité **HIGH** ou **CRITICAL** ayant un correctif |
-| Scan image (Dockle) | Dockle `v0.4.15` | conformité au CIS Docker Benchmark | alerte de niveau **WARN** ou plus |
+| Scan image (Dockle) | Dockle `v0.4.15` | conformité au CIS Docker Benchmark | alerte de niveau **WARN** ou plus (une exception justifiée, voir ci-dessous) |
 
 Trivy utilise `--ignore-unfixed` : une vulnérabilité sans correctif publié ne peut pas être corrigée par une mise à jour, la bloquer empêcherait toute livraison sans gain de sécurité. Elle reste visible dans le rapport.
 
@@ -286,9 +288,25 @@ Le conteneur est lancé **comme en production, durci** : système de fichiers en
 | 3 | `id -u` dans le conteneur | différent de 0 (non root) |
 | 4 | `python -m pip` | absent |
 | 5 | Écriture dans `/app/main.py` | impossible |
-| 6 | `POST /password` sans jeton CSRF | `400` |
-| 7 | Formulaire, jeton CSRF et mot de passe `password` | champ masqué, mot de passe détecté |
-| 8 | Mot de passe vide avec jeton valide | `400` |
+| 6 | Fichiers dans `/var/lib/apt/lists` | aucun (cache apt vide) |
+| 7 | Binaires setuid/setgid | aucun |
+| 8 | `POST /password` sans jeton CSRF | `400` |
+| 9 | Formulaire, jeton CSRF et mot de passe `password` | champ masqué, mot de passe détecté |
+| 10 | Mot de passe vide avec jeton valide | `400` |
+
+### Corrections issues de la première exécution
+
+Sur la première exécution de la pipeline (PR `feat/docker`), le build et les tests du conteneur étaient au vert, mais les trois scanners ont bloqué :
+
+| Outil | Constat | Correction |
+|---|---|---|
+| Hadolint | `DL3066` (info) : `USER app`, utilisateur désigné par son nom | `USER 10001:10001` : l'identifiant numérique permet de vérifier « non root » sans lire `/etc/passwd` |
+| Trivy | 2 vulnérabilités **HIGH** dans `zlib1g` `1:1.3.dfsg+really1.3.1-1+b1` (CVE-2026-85091, débordement de tas dans `gz_vacate()` permettant l'exécution de code ; CVE-2026-76844), corrigées dans `…-1+deb13u1`, publiée après l'image de base. Toutes les dépendances Python : 0 vulnérabilité. | Mise à jour ciblée de `zlib1g` vers la version corrigée **figée**, plutôt qu'un `apt-get upgrade` global non reproductible. À retirer quand Dependabot proposera une image de base qui l'inclut. |
+| Dockle | `DKL-DI-0005` (FATAL) : cache apt non vidé | **Faux positif**, ignoré explicitement (`--ignore DKL-DI-0005`). La couche signalée est celle de l'image officielle Python, qui vide le cache avec `apt-get dist-clean`, commande que Dockle v0.4.15 ne reconnaît pas. L'absence de cache apt est **prouvée** par le test n° 6 du conteneur. |
+| Dockle | `CIS-DI-0008` (info) : 11 binaires setuid/setgid (`su`, `passwd`, `mount`…) | Non bloquant, mais corrigé par défense en profondeur : bits retirés dans l'image, vérifié par le test n° 7. |
+| Dockle | `CIS-DI-0005` (info) : Docker Content Trust non activé | Non bloquant, non appliqué : Docker Content Trust (Notary v1) est abandonné. L'intégrité de l'image de base est garantie par son **digest** figé dans le `Dockerfile`. |
+
+Une alerte n'est jamais masquée sans justification : chaque exception est commentée dans `ci.yml`, documentée ici, et couverte par un test qui prouve que le risque est absent.
 
 ### Sécurité de la chaîne CI elle-même
 
