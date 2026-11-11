@@ -14,6 +14,10 @@ bind = os.environ.get("GUNICORN_BIND", "127.0.0.1:8080")
 # Processus de traitement des requêtes.
 workers = int(os.environ.get("GUNICORN_WORKERS", "2"))
 
+# L'application est chargée une seule fois avant la création des workers :
+# les tables de la base ne sont créées qu'une fois (pas de concurrence).
+preload_app = True
+
 # Une requête bloquée plus de 30 s est interrompue et son worker relancé.
 timeout = 30
 graceful_timeout = 30
