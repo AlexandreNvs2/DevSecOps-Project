@@ -58,6 +58,23 @@ main (protégée)
 ```
 
 1. Créer une branche depuis `main` (`git switch -c fix/...`).
-2. Faire des commits signés, avec des messages au format *Conventional Commits* (`feat:`, `fix:`, `docs:`, `ci:`…).
-3. Pousser la branche et ouvrir une pull request vers `main`.
+2. Faire des commits signés, en suivant la convention de nommage ci-dessous.
+3. Pousser la branche et ouvrir une pull request vers `main` (en brouillon tant que le travail est en cours).
 4. Fusionner une fois la pipeline au vert et les discussions résolues.
+
+### Convention des messages de commit
+
+Format : `[TYPE]-> description courte`
+
+| Type | Usage | Exemple |
+|---|---|---|
+| `[FILE]` | ajout ou import de fichiers | `[FILE]-> Import app.py` |
+| `[CONF]` | configuration (CI, Git, outils) | `[CONF]-> ci.yml, scan lint, SAST, SCA` |
+| `[FIX]` | correction de bug ou de vulnérabilité | `[FIX]-> Flask 3.1.3 (PYSEC-2023-62)` |
+| `[DOCS]` | documentation | `[DOCS]-> README, section versioning` |
+| `[STYLE]` | formatage sans changement de comportement | `[STYLE]-> conformité Flake8` |
+| `[TEST]` | ajout ou modification de tests | `[TEST]-> tests de la route /password` |
+
+Pour une correction de vulnérabilité, le message cite l'identifiant concerné (CWE, PYSEC, règle Bandit ou Semgrep) et, si une issue existe, la référence en seconde ligne (`Closes #N`).
+
+Les deux commits de documentation du début (`docs: ...`) sont antérieurs à l'adoption de cette convention.
