@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Se connecter{% endblock %}
+{% block content %}
+  <h1>Se connecter</h1>
+  <form action="{{ url_for('login') }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <p><label for="username">Identifiant</label><br>
+      <input type="text" id="username" name="username" required
+             maxlength="32" autocomplete="username"></p>
+    <p><label for="password">Mot de passe</label><br>
+      <input type="password" id="password" name="password" required
+             maxlength="128" autocomplete="current-password"></p>
+    <p><input type="submit" value="Se connecter"></p>
+  </form>
+{% endblock %}

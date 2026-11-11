@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Bienvenue</h1>
+  {% if username %}
+    <p>Vous êtes connecté en tant que {{ username }}.</p>
+  {% else %}
+    <p>Testez la robustesse d'un mot de passe, ou créez un compte.</p>
+  {% endif %}
+{% endblock %}
