@@ -138,8 +138,13 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: image
+      # DKL-DI-0005 ignorée (faux positif) : la couche signalée est celle de
+      # l'image officielle Python, qui vide le cache apt avec
+      # « apt-get dist-clean », commande que Dockle v0.4.15 ne reconnaît pas.
+      # L'absence de cache apt est vérifiée par tests/container/smoke_test.sh.
       - name: Bonnes pratiques (CIS Docker Benchmark)
         run: >
           docker run --rm -v "$PWD:/work" goodwithtech/dockle:v0.4.15
           --input /work/image.tar
+          --ignore DKL-DI-0005
           --exit-code 1 --exit-level warn

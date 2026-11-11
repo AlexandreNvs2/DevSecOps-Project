@@ -53,6 +53,18 @@ if docker exec "$NAME" sh -c 'echo x >> /app/main.py' 2>/dev/null; then
 fi
 ok "code en lecture seule"
 
+# 5b. Cache apt vide (justifie l'exception Dockle DKL-DI-0005).
+# (« ; true » : find renvoie une erreur sur les dossiers illisibles par
+# l'utilisateur non root, ce qui ne doit pas interrompre le script.)
+apt_files="$(docker exec "$NAME" sh -c 'find /var/lib/apt/lists -type f ! -name lock 2>/dev/null; true' | wc -l)"
+[ "$apt_files" = "0" ] || fail "cache apt non vide ($apt_files fichiers)"
+ok "cache apt vide"
+
+# 5c. Aucun binaire setuid/setgid dans l'image.
+suid="$(docker exec "$NAME" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null; true' | wc -l)"
+[ "$suid" = "0" ] || fail "$suid binaire(s) setuid/setgid présent(s)"
+ok "aucun binaire setuid/setgid"
+
 # 6. Protection CSRF : un POST sans jeton est refusé.
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'password=password' "$URL/password")"
 [ "$code" = "400" ] || fail "POST sans jeton CSRF : code $code au lieu de 400"
