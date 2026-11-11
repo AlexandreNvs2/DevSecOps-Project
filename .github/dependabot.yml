@@ -1,0 +1,18 @@
+# Mises à jour automatiques proposées par Dependabot (une PR par mise à jour,
+# soumise aux mêmes checks obligatoires que le reste du code).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /app/app
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

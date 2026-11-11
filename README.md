@@ -7,7 +7,7 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 1. [Contenu du dépôt](#contenu-du-dépôt)
 2. [Gestion sécurisée du versioning](#gestion-sécurisée-du-versioning)
 3. [Sécurisation du code source](#sécurisation-du-code-source)
-4. Image Docker et pipeline CI *(en cours : analyses du code en place)*
+4. [Image Docker et pipeline CI](#image-docker-et-pipeline-ci)
 5. Déploiement sécurisé sur AWS *(à venir)*
 6. Stockage sécurisé des mots de passe *(à venir)*
 7. Architecture et cycle de vie sécurisé *(à venir)*
@@ -18,7 +18,11 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 - `app/app/data/` : listes SecLists embarquées (500 et 10 000 mots de passe les plus courants).
 - `app/app/gunicorn.conf.py` : configuration du serveur de production Gunicorn.
 - `app/app/requirements.txt` : dépendances Python, versions figées.
+- `Dockerfile` : construction de l'image Docker (multi-étapes, durcie).
+- `.dockerignore` : liste blanche des fichiers envoyés au build Docker.
+- `tests/container/smoke_test.sh` : tests de fonctionnement et de sécurité du conteneur.
 - `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
+- `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base et des actions.
 
 ## Gestion sécurisée du versioning
 
@@ -225,3 +229,88 @@ Détails de la correction du style (point 11) :
 | SCA (pip-audit) | ❌ Flask 2.2.2 vulnérable | ✅ aucune vulnérabilité connue |
 
 Les 11 problèmes relevés (outils et relecture manuelle) sont corrigés.
+
+## Image Docker et pipeline CI
+
+### Le Dockerfile
+
+L'image est construite en **deux étapes** (*multi-stage build*) à partir d'une même image de base :
+
+1. **`builder`** : crée un environnement virtuel `/opt/venv` et y installe les dépendances de `requirements.txt`.
+2. **`runtime`** : image finale, qui ne reçoit que l'environnement virtuel et le code de l'application.
+
+| Mesure | Détail | Pourquoi |
+|---|---|---|
+| Image de base minimale | `python:3.13.18-slim-trixie` | moins de paquets système, donc moins de vulnérabilités et de surface d'attaque |
+| Base figée par **digest** | `@sha256:e48f59cd…` | l'image construite est toujours la même ; une image modifiée sur le registre ne correspondrait plus à l'empreinte |
+| Utilisateur dédié **non root** | `app`, uid 10001, sans shell (`nologin`) ni répertoire personnel ; déclaré par identifiant numérique (`USER 10001:10001`) | un attaquant qui prendrait le contrôle de l'application n'aurait aucun privilège ; l'identifiant numérique permet de vérifier « non root » sans lire `/etc/passwd` (Hadolint DL3066) |
+| Code en lecture seule | fichiers appartenant à `root`, l'utilisateur `app` ne peut que les lire | l'application ne peut pas modifier son propre code |
+| **pip retiré** de l'image finale | désinstallé du système et de l'environnement virtuel | rien ne peut être installé dans le conteneur en production |
+| Bits **setuid/setgid retirés** | `find / -xdev -perm /6000 -exec chmod a-s` | aucun binaire (`su`, `passwd`, `mount`…) ne peut s'exécuter avec les droits root |
+| Correctifs Debian appliqués | `zlib1g` mis à jour en version corrigée figée | voir les corrections ci-dessous |
+| Pas de cache pip | `--no-cache-dir` | image plus petite, pas de fichiers inutiles |
+| Secrets absents de l'image | `SECRET_KEY` fournie au lancement uniquement | une image publiée ou volée ne contient aucun secret |
+| Serveur de production | `CMD ["gunicorn", "main:app"]`, `GUNICORN_BIND=0.0.0.0:8080` | voir la correction du point 5 ; seul le conteneur ouvre l'écoute |
+| `HEALTHCHECK` | requête sur `/` toutes les 30 s | Docker, puis AWS, détectent un conteneur qui ne répond plus |
+| `.dockerignore` en liste blanche | seul `app/app/` est envoyé au build | `.git`, `.venv`, la configuration CI ou un éventuel fichier de secrets ne peuvent pas entrer dans l'image par erreur |
+| Métadonnées OCI | `LABEL org.opencontainers.image.*` | traçabilité de l'image vers le dépôt source |
+
+### Les jobs Docker de la pipeline
+
+```
+Lint Dockerfile (Hadolint)
+
+Build (image Docker) ──┬── Tests du conteneur
+                       ├── Scan image (Trivy)
+                       └── Scan image (Dockle)
+```
+
+L'image est construite **une seule fois** (`docker build --pull --no-cache`), exportée en fichier (`docker save`) et transmise aux trois jobs suivants comme artefact (conservé 1 jour). Les tests et les scans portent donc exactement sur la même image.
+
+| Job | Outil | Ce qu'il vérifie | Échoue si |
+|---|---|---|---|
+| Lint Dockerfile | Hadolint `v2.15.1` | bonnes pratiques d'écriture du Dockerfile | une règle Hadolint n'est pas respectée |
+| Build | Docker | l'image se construit | erreur de construction |
+| Tests du conteneur | `tests/container/smoke_test.sh` | fonctionnement et durcissement réels du conteneur (voir ci-dessous) | un test échoue |
+| Scan image (Trivy) | Trivy `0.76.2` | vulnérabilités des paquets système et Python de l'image | vulnérabilité **HIGH** ou **CRITICAL** ayant un correctif |
+| Scan image (Dockle) | Dockle `v0.4.15` | conformité au CIS Docker Benchmark | alerte de niveau **WARN** ou plus (une exception justifiée, voir ci-dessous) |
+
+Trivy utilise `--ignore-unfixed` : une vulnérabilité sans correctif publié ne peut pas être corrigée par une mise à jour, la bloquer empêcherait toute livraison sans gain de sécurité. Elle reste visible dans le rapport.
+
+### Tests du conteneur
+
+Le conteneur est lancé **comme en production, durci** : système de fichiers en lecture seule (`--read-only`, seul `/tmp` est inscriptible), aucune capacité Linux (`--cap-drop ALL`), pas d'élévation de privilèges (`no-new-privileges`), et une `SECRET_KEY` aléatoire générée pour le test.
+
+| # | Test | Résultat attendu |
+|---|---|---|
+| 1 | Démarrage sans `SECRET_KEY` | refusé |
+| 2 | Requête sur `/` | Gunicorn répond |
+| 3 | `id -u` dans le conteneur | différent de 0 (non root) |
+| 4 | `python -m pip` | absent |
+| 5 | Écriture dans `/app/main.py` | impossible |
+| 6 | Fichiers dans `/var/lib/apt/lists` | aucun (cache apt vide) |
+| 7 | Binaires setuid/setgid | aucun |
+| 8 | `POST /password` sans jeton CSRF | `400` |
+| 9 | Formulaire, jeton CSRF et mot de passe `password` | champ masqué, mot de passe détecté |
+| 10 | Mot de passe vide avec jeton valide | `400` |
+
+### Corrections issues de la première exécution
+
+Sur la première exécution de la pipeline (PR `feat/docker`), le build et les tests du conteneur étaient au vert, mais les trois scanners ont bloqué :
+
+| Outil | Constat | Correction |
+|---|---|---|
+| Hadolint | `DL3066` (info) : `USER app`, utilisateur désigné par son nom | `USER 10001:10001` : l'identifiant numérique permet de vérifier « non root » sans lire `/etc/passwd` |
+| Trivy | 2 vulnérabilités **HIGH** dans `zlib1g` `1:1.3.dfsg+really1.3.1-1+b1` (CVE-2026-85091, débordement de tas dans `gz_vacate()` permettant l'exécution de code ; CVE-2026-76844), corrigées dans `…-1+deb13u1`, publiée après l'image de base. Toutes les dépendances Python : 0 vulnérabilité. | Mise à jour ciblée de `zlib1g` vers la version corrigée **figée**, plutôt qu'un `apt-get upgrade` global non reproductible. À retirer quand Dependabot proposera une image de base qui l'inclut. |
+| Dockle | `DKL-DI-0005` (FATAL) : cache apt non vidé | **Faux positif**, ignoré explicitement (`--ignore DKL-DI-0005`). La couche signalée est celle de l'image officielle Python, qui vide le cache avec `apt-get dist-clean`, commande que Dockle v0.4.15 ne reconnaît pas. L'absence de cache apt est **prouvée** par le test n° 6 du conteneur. |
+| Dockle | `CIS-DI-0008` (info) : 11 binaires setuid/setgid (`su`, `passwd`, `mount`…) | Non bloquant, mais corrigé par défense en profondeur : bits retirés dans l'image, vérifié par le test n° 7. |
+| Dockle | `CIS-DI-0005` (info) : Docker Content Trust non activé | Non bloquant, non appliqué : Docker Content Trust (Notary v1) est abandonné. L'intégrité de l'image de base est garantie par son **digest** figé dans le `Dockerfile`. |
+
+Une alerte n'est jamais masquée sans justification : chaque exception est commentée dans `ci.yml`, documentée ici, et couverte par un test qui prouve que le risque est absent.
+
+### Sécurité de la chaîne CI elle-même
+
+- **Actions figées par SHA** (`actions/checkout@3d3c42e…  # v7.0.1`) : un tag peut être déplacé vers du code malveillant, une empreinte de commit non. Les versions sont rappelées en commentaire.
+- **Outils figés par version** (Flake8, Bandit, pip-audit, Semgrep, Hadolint, Trivy, Dockle) : un même code donne toujours le même résultat de scan.
+- **`persist-credentials: false`** : le jeton GitHub n'est pas laissé dans le dépôt cloné, les étapes suivantes ne peuvent pas le réutiliser.
+- **Dependabot** (`.github/dependabot.yml`) propose chaque semaine les mises à jour des dépendances Python, de l'image de base et des actions. Chaque mise à jour arrive en pull request et doit passer les checks obligatoires.
