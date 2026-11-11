@@ -46,10 +46,23 @@ Un *ruleset* GitHub (`protect-main`) s'applique à la branche par défaut, **san
 | Require a pull request before merging | aucun push direct : toute modification passe par une pull request |
 | Require conversation resolution | une PR ne peut pas être fusionnée tant qu'une discussion reste ouverte |
 | Méthodes de fusion : merge et squash | le *rebase merge* est désactivé, car GitHub ne peut pas signer les commits rebasés |
+| Require status checks to pass | une PR ne peut être fusionnée que si les 4 jobs de la pipeline réussissent |
+| Require branches to be up to date | la PR doit être testée sur la dernière version de `main` avant la fusion |
 
 **Nombre d'approbations requis : 0.** Le projet est réalisé seul et GitHub interdit d'approuver sa propre pull request ; exiger une approbation bloquerait toute fusion. Dans une équipe, ce nombre serait fixé à au moins 1.
 
-Les vérifications obligatoires de la pipeline (*required status checks*) seront ajoutées au ruleset dès que la pipeline CI existera.
+**Vérifications obligatoires** (*required status checks*), ajoutées une fois la pipeline au vert sur la PR #2 :
+
+| Check obligatoire | Outil |
+|---|---|
+| `Lint (Flake8)` | qualité du code |
+| `SAST (Bandit)` | analyse statique de sécurité |
+| `SAST (Semgrep)` | analyse statique de sécurité |
+| `SCA (pip-audit)` | vulnérabilités des dépendances |
+
+Ces checks sont rattachés à **GitHub Actions** : un autre outil ou un statut posé à la main ne peut pas les satisfaire. La sécurité devient une **condition bloquante** de la livraison : aucune modification n'arrive sur `main` si un scan échoue, et la règle s'applique aussi au propriétaire du dépôt.
+
+**Méthode de fusion utilisée : merge commit.** Elle conserve chaque commit de la branche dans l'historique de `main`, ce qui garde valides les références de commits citées dans ce README (un *squash* les regrouperait en un seul).
 
 ### Workflow de branches
 
