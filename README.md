@@ -6,7 +6,7 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 
 1. [Contenu du dépôt](#contenu-du-dépôt)
 2. [Gestion sécurisée du versioning](#gestion-sécurisée-du-versioning)
-3. [Sécurisation du code source](#sécurisation-du-code-source) *(en cours)*
+3. [Sécurisation du code source](#sécurisation-du-code-source)
 4. Image Docker et pipeline CI *(en cours : analyses du code en place)*
 5. Déploiement sécurisé sur AWS *(à venir)*
 6. Stockage sécurisé des mots de passe *(à venir)*
@@ -134,7 +134,8 @@ Choix de configuration :
 | 2, 3, 4, 10 | Listes SecLists **embarquées** dans `app/app/data/` et chargées une seule fois au démarrage dans un `frozenset`, avec une **comparaison exacte**. Plus aucun appel réseau, donc plus de `requests` (dépendance retirée). | `6e86286` `[FIX]-> Listes SecLists embarqués, comparaison exacte` |
 | 6, 7, 9 | Formulaire : champ `type="password"`, URL d'envoi générée par `url_for` (relative), `required` et `maxlength`. Validation **côté serveur** : mot de passe vide, absent ou de plus de 128 caractères refusé avec un code `400`. | `3cfa81c` `[FIX]-> formulaire et validation des entrées` |
 | 5 | Serveur de production **Gunicorn** (`gunicorn.conf.py`), écoute par défaut sur `127.0.0.1` ; le serveur de développement Flask (`app.run`) est limité à `127.0.0.1`. Bandit et Semgrep ne signalent plus rien. | `28d7853` `[FIX]-> Gunicorn, fin de l'écoute sur 0.0.0.0` |
-| 8 | Protection **CSRF** avec Flask-WTF (`CSRFProtect`), jeton caché dans le formulaire, **clé secrète** fournie par l'environnement (obligatoire), cookie de session `Secure`, `HttpOnly`, `SameSite=Lax`. | `[FIX]-> protection CSRF, clé secrète, cookie de session` |
+| 8 | Protection **CSRF** avec Flask-WTF (`CSRFProtect`), jeton caché dans le formulaire, **clé secrète** fournie par l'environnement (obligatoire), cookie de session `Secure`, `HttpOnly`, `SameSite=Lax`. | `676c90e` `[FIX]-> protection CSRF, clé secrète, cookie de session` |
+| 11 | Code reformaté selon PEP 8 (indentation de 4 espaces, espaces parasites, lignes vides, longueur de ligne). Aucun changement de comportement. Flake8 ne signale plus rien. | `[STYLE]-> conformité Flake8 (PEP 8)` |
 
 Détails de la correction des listes :
 
@@ -195,4 +196,19 @@ cd app/app
 SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") SESSION_COOKIE_SECURE=false python main.py
 ```
 
-Le point 11 est en cours de traitement.
+Détails de la correction du style (point 11) :
+
+- Les 74 remarques Flake8 d'origine venaient surtout d'une indentation à 2 espaces, d'espaces en fin de ligne et de lignes vides manquantes. Une partie a disparu au fil des corrections précédentes, le code réécrit étant déjà conforme ; les 24 restantes ont été corrigées dans un commit à part.
+- Ce reformatage est volontairement **isolé** des corrections de sécurité : les diffs de sécurité restent lisibles, et ce commit ne change aucun comportement (vérifié : mêmes réponses sur `/`, `password`, `1124`, `a` et mot de passe vide).
+- La longueur de ligne par défaut de PEP 8 (79 caractères) est conservée ; les longs messages sont découpés en chaînes concaténées.
+
+### Bilan de l'audit du code
+
+| Job de la pipeline | Constat initial (run CI #1) | Après corrections |
+|---|---|---|
+| Lint (Flake8) | ❌ 74 remarques | ✅ 0 |
+| SAST (Bandit) | ❌ 3 problèmes (B113 ×2, B104) | ✅ 0 |
+| SAST (Semgrep) | ❌ 1 problème (`avoid_app_run_with_bad_host`) | ✅ 0 |
+| SCA (pip-audit) | ❌ Flask 2.2.2 vulnérable | ✅ aucune vulnérabilité connue |
+
+Les 11 problèmes relevés (outils et relecture manuelle) sont corrigés.
