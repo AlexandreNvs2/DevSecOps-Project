@@ -14,11 +14,18 @@ ok() { echo "OK : $*"; }
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -f "$COOKIES"; }
 trap cleanup EXIT
 
-# 1. Sans SECRET_KEY, l'application doit refuser de démarrer.
-if docker run --rm "$IMAGE" python -c "import main" >/dev/null 2>&1; then
+# 1. Sans SECRET_KEY ou sans DATABASE_URL, l'application doit refuser de
+#    démarrer.
+if docker run --rm -e DATABASE_URL=sqlite:////tmp/t.db "$IMAGE" \
+     python -c "import main" >/dev/null 2>&1; then
   fail "l'application démarre sans SECRET_KEY"
 fi
 ok "démarrage refusé sans SECRET_KEY"
+if docker run --rm -e SECRET_KEY=test "$IMAGE" \
+     python -c "import main" >/dev/null 2>&1; then
+  fail "l'application démarre sans DATABASE_URL"
+fi
+ok "démarrage refusé sans DATABASE_URL"
 
 # 2. Lancement durci : système de fichiers en lecture seule, aucune
 #    capacité Linux, pas d'élévation de privilèges.
@@ -26,6 +33,7 @@ docker run -d --name "$NAME" -p 8080:8080 \
   --read-only --tmpfs /tmp \
   --cap-drop ALL --security-opt no-new-privileges \
   -e SECRET_KEY="$(openssl rand -hex 32)" \
+  -e DATABASE_URL=sqlite:////tmp/app.db \
   -e SESSION_COOKIE_SECURE=false \
   "$IMAGE" >/dev/null
 
@@ -87,5 +95,27 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -X POST \
   "$URL/password")"
 [ "$code" = "400" ] || fail "mot de passe vide : code $code au lieu de 400"
 ok "mot de passe vide refusé (400)"
+
+# 8. Création de compte puis connexion, avec Argon2id dans le conteneur.
+reg_page="$(curl -fsS -b "$COOKIES" -c "$COOKIES" "$URL/register")"
+token="$(echo "$reg_page" | sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' | head -1)"
+code="$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -c "$COOKIES" -X POST \
+  --data-urlencode "username=smoketest" --data-urlencode "password=Tr0ub4dor-cheval-agrafe" \
+  --data-urlencode "password_confirm=Tr0ub4dor-cheval-agrafe" \
+  --data-urlencode "csrf_token=$token" "$URL/register")"
+[ "$code" = "201" ] || fail "création de compte : code $code au lieu de 201"
+ok "compte créé (201)"
+
+code="$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -c "$COOKIES" -X POST \
+  --data-urlencode "username=smoketest" --data-urlencode "password=mauvais-mot-de-passe" \
+  --data-urlencode "csrf_token=$token" "$URL/login")"
+[ "$code" = "401" ] || fail "mauvais mot de passe : code $code au lieu de 401"
+ok "connexion refusée avec un mauvais mot de passe (401)"
+
+code="$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -c "$COOKIES" -X POST \
+  --data-urlencode "username=smoketest" --data-urlencode "password=Tr0ub4dor-cheval-agrafe" \
+  --data-urlencode "csrf_token=$token" "$URL/login")"
+[ "$code" = "302" ] || fail "connexion : code $code au lieu de 302"
+ok "connexion réussie (302)"
 
 echo "Tous les tests du conteneur sont passés."

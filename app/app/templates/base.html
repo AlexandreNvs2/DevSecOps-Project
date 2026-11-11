@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Password check{% endblock %}</title>
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('hello') }}">Accueil</a> ·
+    <a href="{{ url_for('password') }}">Tester un mot de passe</a> ·
+    {% if session.get('username') %}
+      Connecté : {{ session.get('username') }}
+      <form action="{{ url_for('logout') }}" method="post" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="submit" value="Se déconnecter">
+      </form>
+    {% else %}
+      <a href="{{ url_for('register') }}">Créer un compte</a> ·
+      <a href="{{ url_for('login') }}">Se connecter</a>
+    {% endif %}
+  </nav>
+  {% if error %}<p role="alert"><strong>{{ error }}</strong></p>{% endif %}
+  {% if info %}<p role="status">{{ info }}</p>{% endif %}
+  {% block content %}{% endblock %}
+</body>
+</html>

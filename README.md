@@ -9,17 +9,21 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 3. [Sécurisation du code source](#sécurisation-du-code-source)
 4. [Image Docker et pipeline CI](#image-docker-et-pipeline-ci)
 5. Déploiement sécurisé sur AWS *(à venir)*
-6. Stockage sécurisé des mots de passe *(à venir)*
+6. [Stockage sécurisé des mots de passe](#stockage-sécurisé-des-mots-de-passe)
 7. Architecture et cycle de vie sécurisé *(à venir)*
 
 ## Contenu du dépôt
 
-- `app/app/main.py` : application Flask (vérification d'un mot de passe dans les listes SecLists).
+- `app/app/main.py` : application Flask (vérification d'un mot de passe, création de compte, connexion).
+- `app/app/security.py` : hachage Argon2id et règles de validation des identifiants et mots de passe.
+- `app/app/models.py` : modèle utilisateur et accès à la base de données (SQLAlchemy).
+- `app/app/templates/` : pages HTML (Jinja2, échappement automatique).
 - `app/app/data/` : listes SecLists embarquées (500 et 10 000 mots de passe les plus courants).
 - `app/app/gunicorn.conf.py` : configuration du serveur de production Gunicorn.
 - `app/app/requirements.txt` : dépendances Python, versions figées.
 - `Dockerfile` : construction de l'image Docker (multi-étapes, durcie).
 - `.dockerignore` : liste blanche des fichiers envoyés au build Docker.
+- `tests/unit/` : tests unitaires (pytest).
 - `tests/container/smoke_test.sh` : tests de fonctionnement et de sécurité du conteneur.
 - `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
 - `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base et des actions.
@@ -55,14 +59,20 @@ Un *ruleset* GitHub (`protect-main`) s'applique à la branche par défaut, **san
 
 **Nombre d'approbations requis : 0.** Le projet est réalisé seul et GitHub interdit d'approuver sa propre pull request ; exiger une approbation bloquerait toute fusion. Dans une équipe, ce nombre serait fixé à au moins 1.
 
-**Vérifications obligatoires** (*required status checks*), ajoutées une fois la pipeline au vert sur la PR #2 :
+**Vérifications obligatoires** (*required status checks*), ajoutées au fur et à mesure que chaque job de la pipeline est au vert :
 
-| Check obligatoire | Outil |
-|---|---|
-| `Lint (Flake8)` | qualité du code |
-| `SAST (Bandit)` | analyse statique de sécurité |
-| `SAST (Semgrep)` | analyse statique de sécurité |
-| `SCA (pip-audit)` | vulnérabilités des dépendances |
+| Check obligatoire | Rôle | Ajouté après |
+|---|---|---|
+| `Lint (Flake8)` | qualité du code | PR #2 (audit du code) |
+| `SAST (Bandit)` | analyse statique de sécurité | PR #2 |
+| `SAST (Semgrep)` | analyse statique de sécurité | PR #2 |
+| `SCA (pip-audit)` | vulnérabilités des dépendances | PR #2 |
+| `Lint Dockerfile (Hadolint)` | bonnes pratiques du Dockerfile | PR #4 (image Docker) |
+| `Build (image Docker)` | construction de l'image | PR #4 |
+| `Tests du conteneur` | fonctionnement et durcissement du conteneur | PR #4 |
+| `Scan image (Trivy)` | vulnérabilités de l'image | PR #4 |
+| `Scan image (Dockle)` | CIS Docker Benchmark | PR #4 |
+| `Tests unitaires (pytest)` | logique de l'application, stockage des mots de passe | PR du stockage des mots de passe |
 
 Ces checks sont rattachés à **GitHub Actions** : un autre outil ou un statut posé à la main ne peut pas les satisfaire. La sécurité devient une **condition bloquante** de la livraison : aucune modification n'arrive sur `main` si un scan échoue, et la règle s'applique aussi au propriétaire du dépôt.
 
@@ -314,3 +324,92 @@ Une alerte n'est jamais masquée sans justification : chaque exception est comme
 - **Outils figés par version** (Flake8, Bandit, pip-audit, Semgrep, Hadolint, Trivy, Dockle) : un même code donne toujours le même résultat de scan.
 - **`persist-credentials: false`** : le jeton GitHub n'est pas laissé dans le dépôt cloné, les étapes suivantes ne peuvent pas le réutiliser.
 - **Dependabot** (`.github/dependabot.yml`) propose chaque semaine les mises à jour des dépendances Python, de l'image de base et des actions. Chaque mise à jour arrive en pull request et doit passer les checks obligatoires.
+
+## Stockage sécurisé des mots de passe
+
+### Fonctionnalité
+
+L'application permet désormais de **créer un compte** (`/register`), de **se connecter** (`/login`) et de **se déconnecter** (`/logout`). Les mots de passe des utilisateurs sont stockés en base de données sous forme d'**empreinte Argon2id**, jamais en clair.
+
+### Pourquoi Argon2id
+
+| Option | Problème |
+|---|---|
+| Stockage en clair | une fuite de la base expose directement tous les mots de passe |
+| Chiffrement (AES…) | réversible : qui obtient la clé obtient tous les mots de passe |
+| Hachage rapide (MD5, SHA-256) | un GPU teste des milliards de candidats par seconde |
+| **Argon2id** | fonction **lente et gourmande en mémoire**, conçue pour les mots de passe ; gagnante de la *Password Hashing Competition* (2015), recommandée par l'OWASP et standardisée par la RFC 9106 |
+
+Implémentation : bibliothèque `argon2-cffi` (`25.1.0`), profil **RFC 9106 « low memory »** :
+
+| Paramètre | Valeur | Effet |
+|---|---|---|
+| Variante | Argon2id | résiste à la fois aux attaques par GPU et par canaux auxiliaires |
+| Mémoire | 64 Mio par calcul | rend les attaques massives sur GPU ou ASIC très coûteuses |
+| Itérations | 3 | augmente le temps de calcul |
+| Parallélisme | 4 | |
+| Sel | 16 octets aléatoires par mot de passe | deux utilisateurs ayant le même mot de passe ont des empreintes différentes ; les tables précalculées sont inutiles |
+
+L'empreinte stockée contient l'algorithme, les paramètres et le sel (`$argon2id$v=19$m=65536,t=3,p=4$<sel>$<hash>`) : la vérification n'a besoin de rien d'autre. **Mise à jour transparente** : si les paramètres sont renforcés plus tard, l'empreinte d'un utilisateur est recalculée automatiquement à sa prochaine connexion réussie (`check_needs_rehash`).
+
+### Politique de mot de passe
+
+Inspirée du **NIST SP 800-63B** : on privilégie la longueur et le refus des mots de passe connus plutôt que des règles de composition (majuscule, chiffre…) qui poussent à des mots de passe prévisibles.
+
+| Règle | Valeur |
+|---|---|
+| Longueur minimale | 12 caractères |
+| Longueur maximale | 128 caractères (évite de faire calculer Argon2 sur des entrées démesurées) |
+| Mots de passe courants refusés | les 10 000 de SecLists, déjà embarqués dans l'application |
+| Mot de passe identique à l'identifiant | refusé |
+| Confirmation | les deux saisies doivent correspondre |
+| Identifiant | 3 à 32 caractères `[a-z0-9_.-]`, normalisé en minuscules (pas de doublons `Alice` / `alice`) |
+
+La fonctionnalité d'origine de l'application (vérifier un mot de passe dans les listes SecLists) sert ainsi directement à protéger les comptes.
+
+### Protection de la connexion
+
+| Mesure | Détail |
+|---|---|
+| Pas d'énumération des comptes | même message et même code (`401`) que l'identifiant existe ou non |
+| Temps de réponse constant | si le compte n'existe pas, une vérification Argon2 factice est quand même calculée : on ne peut pas deviner les comptes existants en mesurant le temps de réponse |
+| Fixation de session | la session est entièrement réinitialisée à la connexion |
+| CSRF | tous les formulaires (inscription, connexion, déconnexion) portent un jeton CSRF ; la déconnexion se fait en `POST` |
+| Cookie de session | `Secure`, `HttpOnly`, `SameSite=Lax` (voir le point 8 de l'audit du code) |
+
+La limitation du nombre de tentatives (force brute) sera assurée au niveau de l'infrastructure, par une règle de limitation de débit du **WAF AWS** placé devant le load balancer : un compteur en mémoire dans l'application ne serait pas partagé entre les workers et les conteneurs.
+
+### Base de données
+
+- Accès par **SQLAlchemy** (`2.1.8`) : toutes les requêtes sont **paramétrées** par l'ORM, aucune concaténation de chaînes dans du SQL, donc pas d'injection SQL.
+- Adresse de la base fournie par la variable d'environnement **`DATABASE_URL`**, obligatoire comme `SECRET_KEY` (l'application refuse de démarrer sans elle). Aucun mot de passe de base de données dans le code.
+- **SQLite** en développement, dans les tests unitaires et dans les tests du conteneur ; **PostgreSQL** (AWS RDS, chiffré) en production, via le pilote `psycopg` (`3.3.8`). Le même code fonctionne avec les deux.
+- Gunicorn charge l'application une seule fois avant de créer ses workers (`preload_app`) : les tables ne sont créées qu'une fois, et le pool de connexions est vidé avant la création des workers pour qu'aucune connexion ne soit partagée entre eux.
+
+Lancer l'application en local :
+
+```bash
+cd app/app
+SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") DATABASE_URL=sqlite:///dev.db SESSION_COOKIE_SECURE=false python main.py
+```
+
+### Tests
+
+**Tests unitaires** (`tests/unit/`, job `Tests unitaires (pytest)`) :
+
+| Test | Vérifie |
+|---|---|
+| `test_register_stores_argon2id_hash_not_password` | l'empreinte stockée est en Argon2id, avec les bons paramètres, et ne contient pas le mot de passe |
+| `test_same_password_gives_different_hashes` | le sel est bien aléatoire |
+| `test_register_rejects_common_password` | un mot de passe des listes SecLists est refusé et rien n'est stocké |
+| `test_register_rejects_short_password`, `..._equal_to_username`, `..._mismatched_confirmation`, `..._invalid_username` | la politique de mot de passe et d'identifiant |
+| `test_register_rejects_duplicate_username` | doublon refusé (`409`), y compris en changeant la casse |
+| `test_login_success_opens_session` | connexion valide |
+| `test_login_wrong_password_and_unknown_user_same_answer` | réponses identiques : pas d'énumération |
+| `test_logout_clears_session` | déconnexion |
+| `test_login_rehashes_outdated_hash` | une empreinte aux anciens paramètres est recalculée à la connexion |
+| `test_password_check_*` | la fonctionnalité d'origine (listes SecLists, validation des entrées) |
+
+Le job Flake8 analyse aussi désormais le dossier `tests/`.
+
+**Tests du conteneur** : `smoke_test.sh` vérifie en plus le refus de démarrer sans `DATABASE_URL`, puis, dans le conteneur durci, la création d'un compte (`201`), le refus d'un mauvais mot de passe (`401`) et la connexion (`302`), avec les jetons CSRF.

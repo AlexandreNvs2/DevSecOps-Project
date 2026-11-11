@@ -1,8 +1,13 @@
 import os
 from pathlib import Path
 
-from flask import Flask, request, render_template
+from flask import Flask, redirect, render_template, request, session, url_for
 from flask_wtf.csrf import CSRFProtect
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
+import security
+from models import User, init_db
 
 app = Flask(__name__)
 
@@ -28,6 +33,17 @@ app.config.update(
 # Protection CSRF sur toutes les requêtes POST.
 csrf = CSRFProtect(app)
 
+# Base de données : adresse fournie par l'environnement, comme la clé
+# secrète (en production, le mot de passe de la base vient d'AWS Secrets
+# Manager). Exemples :
+#   sqlite:////tmp/app.db                       (développement, tests)
+#   postgresql+psycopg://user:mdp@hote:5432/db  (production, AWS RDS)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("La variable d'environnement DATABASE_URL est requise.")
+
+Session = init_db(DATABASE_URL)
+
 DATA_DIR = Path(__file__).parent / "data"
 
 
@@ -41,12 +57,96 @@ def load_wordlist(filename):
 WORST_500 = load_wordlist("500-worst-passwords.txt")
 WORST_10K = load_wordlist("10k-most-common.txt")
 
-MAX_PASSWORD_LENGTH = 128
+COMMON_PASSWORDS = (WORST_500, WORST_10K)
+
+MAX_PASSWORD_LENGTH = security.MAX_PASSWORD_LENGTH
 
 
 @app.route("/")
 def hello():
-    return "Welcome to the website. Go to /password to check your password !"
+    return render_template("index.html", username=session.get("username"))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "GET":
+        return render_template("register.html")
+
+    username = security.normalize_username(request.form.get("username"))
+    new_password = request.form.get("password", "")
+    confirmation = request.form.get("password_confirm", "")
+
+    problem = security.username_problem(username)
+    if not problem and new_password != confirmation:
+        problem = "Les deux mots de passe ne correspondent pas."
+    if not problem:
+        problem = security.password_problem(
+            new_password, username, COMMON_PASSWORDS
+        )
+    if problem:
+        return render_template("register.html", error=problem), 400
+
+    user = User(
+        username=username,
+        password_hash=security.hash_password(new_password),
+    )
+    with Session() as db:
+        db.add(user)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return (
+                render_template(
+                    "register.html", error="Cet identifiant est déjà pris."
+                ),
+                409,
+            )
+    return render_template(
+        "login.html", info="Compte créé. Vous pouvez vous connecter."
+    ), 201
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET":
+        return render_template("login.html")
+
+    username = security.normalize_username(request.form.get("username"))
+    candidate = request.form.get("password", "")
+    # Message unique, que le compte existe ou non : pas d'énumération.
+    failure = render_template(
+        "login.html", error="Identifiant ou mot de passe incorrect."
+    ), 401
+
+    if not candidate or len(candidate) > MAX_PASSWORD_LENGTH:
+        return failure
+
+    with Session() as db:
+        user = db.scalar(select(User).where(User.username == username))
+        if user is None:
+            security.verify_dummy(candidate)
+            return failure
+        if not security.verify_password(user.password_hash, candidate):
+            return failure
+        # Paramètres Argon2 renforcés depuis la création du compte :
+        # l'empreinte est recalculée avec les nouveaux paramètres.
+        if security.needs_rehash(user.password_hash):
+            user.password_hash = security.hash_password(candidate)
+            db.commit()
+        user_id, user_name = user.id, user.username
+
+    # Nouvelle session à la connexion : empêche la fixation de session.
+    session.clear()
+    session["user_id"] = user_id
+    session["username"] = user_name
+    return redirect(url_for("hello"))
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return redirect(url_for("hello"))
 
 
 @app.route("/password", methods=["GET", "POST"])
