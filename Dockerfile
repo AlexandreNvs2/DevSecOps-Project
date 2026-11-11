@@ -29,9 +29,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     GUNICORN_BIND=0.0.0.0:8080
 
-# pip est retiré de l'image finale : rien ne peut y être installé une fois
-# en production. Utilisateur dédié sans shell ni répertoire personnel.
-RUN python -m pip uninstall --yes pip \
+# 1. Correctif de sécurité Debian : zlib1g corrigé (CVE-2026-85091,
+#    CVE-2026-76844, signalées HIGH par Trivy), publié après l'image de base.
+#    Version figée ; à retirer quand Dependabot fournira une image de base
+#    qui l'inclut. Si l'image de base contient un jour une version plus
+#    récente, apt refusera de rétrograder et le build échouera : c'est le
+#    signal pour supprimer cette ligne.
+# 2. pip est retiré de l'image finale : rien ne peut y être installé une fois
+#    en production.
+# 3. Bits setuid/setgid retirés (su, passwd, mount...) : aucun binaire de
+#    l'image ne peut plus s'exécuter avec les droits root (Dockle CIS-DI-0008).
+# 4. Utilisateur dédié sans shell ni répertoire personnel.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends --only-upgrade \
+       zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall --yes pip \
+    && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
     && groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home \
        --shell /usr/sbin/nologin app
@@ -43,7 +57,9 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY app/app/ /app/
 
-USER app
+# Identifiant numérique (et non le nom « app ») : vérifiable sans lire
+# /etc/passwd, par exemple par une règle « runAsNonRoot » (Hadolint DL3066).
+USER 10001:10001
 
 EXPOSE 8080
 
