@@ -16,6 +16,7 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 
 - `app/app/main.py` : application Flask (vérification d'un mot de passe dans les listes SecLists).
 - `app/app/data/` : listes SecLists embarquées (500 et 10 000 mots de passe les plus courants).
+- `app/app/gunicorn.conf.py` : configuration du serveur de production Gunicorn.
 - `app/app/requirements.txt` : dépendances Python, versions figées.
 - `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
 
@@ -131,7 +132,8 @@ Choix de configuration :
 |---|---|---|
 | 1 | Flask mis à jour en **3.1.3** (version corrigeant les deux vulnérabilités), version figée avec `==`. Le job SCA passe au vert. | `[FIX]-> Flask 3.1.3 (PYSEC-2023-62, PYSEC-2026-2151)` |
 | 2, 3, 4, 10 | Listes SecLists **embarquées** dans `app/app/data/` et chargées une seule fois au démarrage dans un `frozenset`, avec une **comparaison exacte**. Plus aucun appel réseau, donc plus de `requests` (dépendance retirée). | `6e86286` `[FIX]-> Listes SecLists embarqués, comparaison exacte` |
-| 6, 7, 9 | Formulaire : champ `type="password"`, URL d'envoi générée par `url_for` (relative), `required` et `maxlength`. Validation **côté serveur** : mot de passe vide, absent ou de plus de 128 caractères refusé avec un code `400`. | `[FIX]-> formulaire et validation des entrées` |
+| 6, 7, 9 | Formulaire : champ `type="password"`, URL d'envoi générée par `url_for` (relative), `required` et `maxlength`. Validation **côté serveur** : mot de passe vide, absent ou de plus de 128 caractères refusé avec un code `400`. | `3cfa81c` `[FIX]-> formulaire et validation des entrées` |
+| 5 | Serveur de production **Gunicorn** (`gunicorn.conf.py`), écoute par défaut sur `127.0.0.1` ; le serveur de développement Flask (`app.run`) est limité à `127.0.0.1`. Bandit et Semgrep ne signalent plus rien. | `[FIX]-> Gunicorn, fin de l'écoute sur 0.0.0.0` |
 
 Détails de la correction des listes :
 
@@ -152,4 +154,22 @@ Détails de la correction du formulaire :
 - **Validation côté serveur** : `required` et `maxlength` dans le HTML ne sont qu'un confort, contournable avec `curl`. La vraie vérification est faite dans la route Flask. La limite de 128 caractères évite aussi de traiter des entrées démesurées.
 - Vérifié : vide → `400`, champ absent → `400`, 200 caractères → `400`, 128 caractères → `200`, `password` → détecté.
 
-Les points 5, 8 et 11 sont en cours de traitement.
+Détails de la correction du serveur (point 5) :
+
+- **Le problème** : `app.run(host='0.0.0.0')` lançait le serveur de développement de Flask, qui n'est pas conçu pour la production (un seul processus, pas de limites, pas de gestion des requêtes bloquées), sur toutes les interfaces réseau de la machine.
+- **Gunicorn** (version figée `27.0.0`, sans vulnérabilité connue selon pip-audit) sert l'application en production : `gunicorn main:app`, lancé depuis `app/app/`, lit automatiquement `gunicorn.conf.py`.
+- **Adresse d'écoute sûre par défaut** : `127.0.0.1:8080`. Elle n'est ouverte (`0.0.0.0:8080`) que par la variable d'environnement `GUNICORN_BIND`, qui sera définie **uniquement dans l'image Docker**. Un conteneur doit écouter sur toutes ses interfaces pour être joignable ; l'exposition réelle est alors contrôlée par le réseau (security group, load balancer), pas par l'application. Ce choix est explicite et documenté plutôt que masqué par un `# nosec`.
+- **Configuration de durcissement** :
+
+  | Paramètre | Valeur | Rôle |
+  |---|---|---|
+  | `workers` | 2 (variable `GUNICORN_WORKERS`) | plusieurs processus : un worker bloqué ne rend pas le service indisponible |
+  | `timeout` | 30 s | une requête bloquée est interrompue et son worker relancé |
+  | `limit_request_line` | 4094 octets | ligne de requête limitée |
+  | `limit_request_fields` | 50 | nombre d'en-têtes limité |
+  | `limit_request_field_size` | 8190 octets | taille d'un en-tête limitée |
+  | `accesslog`, `errorlog` | sortie standard | journaux récupérés par Docker puis par AWS |
+
+- Gunicorn ne fonctionne pas sous Windows : il sera testé dans le conteneur Docker, lors de l'étape de la pipeline qui valide l'image.
+
+Les points 8 et 11 sont en cours de traitement.
