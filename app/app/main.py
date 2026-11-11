@@ -16,6 +16,8 @@ def load_wordlist(filename):
 
 WORST_500 = load_wordlist("500-worst-passwords.txt")
 WORST_10K = load_wordlist("10k-most-common.txt")
+
+MAX_PASSWORD_LENGTH = 128
  
 @app.route('/') 
 def hello(): 
@@ -24,7 +26,9 @@ def hello():
 @app.route('/password', methods = ["GET", "POST"]) 
 def password(): 
     if request.method == "POST": 
-        password = request.form.get("password") 
+        password = request.form.get("password", "")
+        if not password or len(password) > MAX_PASSWORD_LENGTH:
+            return "Invalid password", 400
         if password in WORST_500:
             return "Your password is in 500 worst passwords... Change it immediately" 
         elif password in WORST_10K:
