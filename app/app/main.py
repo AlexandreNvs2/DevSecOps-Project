@@ -1,8 +1,32 @@
+import os
 from pathlib import Path
 
 from flask import Flask, request, render_template
+from flask_wtf.csrf import CSRFProtect
 
 app = Flask(__name__)
+
+# Clé secrète : signe le cookie de session et les jetons CSRF.
+# Elle n'est jamais écrite dans le code : elle vient de l'environnement
+# (en production, d'un gestionnaire de secrets AWS). Sans elle, l'application
+# refuse de démarrer plutôt que de tourner avec une clé faible.
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("La variable d'environnement SECRET_KEY est requise.")
+
+app.config.update(
+    SECRET_KEY=SECRET_KEY,
+    # Cookie de session illisible par JavaScript (limite le vol par XSS).
+    SESSION_COOKIE_HTTPONLY=True,
+    # Cookie non envoyé par les requêtes provenant d'autres sites.
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Cookie envoyé uniquement en HTTPS ; désactivable en local (HTTP).
+    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "true")
+    == "true",
+)
+
+# Protection CSRF sur toutes les requêtes POST.
+csrf = CSRFProtect(app)
 
 DATA_DIR = Path(__file__).parent / "data"
 
