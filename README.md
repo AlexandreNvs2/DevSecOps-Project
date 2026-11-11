@@ -27,6 +27,7 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 - `tests/container/smoke_test.sh` : tests de fonctionnement et de sécurité du conteneur.
 - `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
 - `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base et des actions.
+- `CLAUDE.md` : contexte du projet pour l'assistant IA Claude Code (règles de travail, état d'avancement, contraintes AWS). Il permet de reprendre le travail sur une autre machine et documente de façon transparente l'usage de l'IA : l'assistant a rédigé le code et la documentation en expliquant chaque choix ; les commits, les push, les fusions et la configuration GitHub ont été faits par l'auteur.
 
 ## Gestion sécurisée du versioning
 
