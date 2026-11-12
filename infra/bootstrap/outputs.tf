@@ -1,6 +1,6 @@
 output "state_bucket" {
   description = "Bucket de l'état, à passer à « terraform init -backend-config »."
-  value       = aws_s3_bucket.state.id
+  value       = local.state_name
 }
 
 output "state_kms_key_arn" {

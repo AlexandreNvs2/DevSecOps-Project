@@ -1,7 +1,6 @@
 # Tests du module bootstrap, sans compte AWS : le fournisseur est simulé
 # (mock_provider), « apply » ne crée rien et calcule des valeurs factices.
-# Ils prouvent que les garanties justifiant les exceptions Checkov sont
-# bien en place.
+# Ils prouvent que les garanties de sécurité de l'état sont en place.
 #
 # Lancement : terraform init -backend=false && terraform test
 
@@ -15,6 +14,16 @@ mock_provider "aws" {
 
 run "etat_protege" {
   command = apply
+
+  assert {
+    condition     = aws_s3_bucket_versioning.state.bucket == "devsecops-tfstate-123456789012"
+    error_message = "Le nom du bucket doit être dérivé du numéro de compte (aucune donnée du compte dans le dépôt)."
+  }
+
+  assert {
+    condition     = aws_s3_bucket_ownership_controls.state.rule[0].object_ownership == "BucketOwnerEnforced"
+    error_message = "Les ACL doivent être désactivées sur le bucket de l'état."
+  }
 
   assert {
     condition     = aws_s3_bucket_versioning.state.versioning_configuration[0].status == "Enabled"
@@ -68,5 +77,15 @@ run "journaux_proteges" {
   assert {
     condition     = one(aws_s3_bucket_server_side_encryption_configuration.logs.rule).apply_server_side_encryption_by_default[0].sse_algorithm == "AES256"
     error_message = "Les journaux doivent être chiffrés (SSE-S3, seul mode accepté pour les journaux d'accès)."
+  }
+
+  assert {
+    condition     = jsondecode(aws_s3_bucket_policy.logs.policy).Statement[0].Condition.ArnLike["aws:SourceArn"] == "arn:aws:s3:::devsecops-tfstate-123456789012"
+    error_message = "Seuls les journaux du bucket de l'état peuvent être écrits dans le bucket des journaux."
+  }
+
+  assert {
+    condition     = jsondecode(aws_s3_bucket_policy.logs.policy).Statement[1].Effect == "Deny" && jsondecode(aws_s3_bucket_policy.logs.policy).Statement[1].Condition.Bool["aws:SecureTransport"] == "false"
+    error_message = "Les accès hors HTTPS au bucket des journaux doivent être refusés."
   }
 }
