@@ -2,15 +2,152 @@
 
 Challenge final DevSecOps : intégrer et déployer de manière sécurisée une application Python (Flask) dans une pipeline CI/CD, en appliquant les principes DevSecOps.
 
+L'application est déployée sur AWS (ECS Fargate derrière un load balancer et un pare-feu applicatif, base PostgreSQL chiffrée) par une pipeline GitHub Actions qui la bloque au moindre problème de sécurité : 12 contrôles obligatoires avant toute fusion, approbation manuelle avant tout déploiement, puis analyse dynamique de la version en ligne.
+
 ## Sommaire
 
-1. [Contenu du dépôt](#contenu-du-dépôt)
-2. [Gestion sécurisée du versioning](#gestion-sécurisée-du-versioning)
-3. [Sécurisation du code source](#sécurisation-du-code-source)
-4. [Image Docker et pipeline CI](#image-docker-et-pipeline-ci)
-5. [Déploiement sécurisé sur AWS](#déploiement-sécurisé-sur-aws) *(en cours)*
-6. [Stockage sécurisé des mots de passe](#stockage-sécurisé-des-mots-de-passe)
-7. Architecture et cycle de vie sécurisé *(à venir)*
+1. [Synthèse : critères du challenge](#synthèse--critères-du-challenge)
+2. [Architecture et cycle de vie sécurisé](#architecture-et-cycle-de-vie-sécurisé)
+3. [Contenu du dépôt](#contenu-du-dépôt)
+4. [Gestion sécurisée du versioning](#gestion-sécurisée-du-versioning)
+5. [Sécurisation du code source](#sécurisation-du-code-source)
+6. [Image Docker et pipeline CI](#image-docker-et-pipeline-ci)
+7. [Déploiement sécurisé sur AWS](#déploiement-sécurisé-sur-aws)
+8. [Stockage sécurisé des mots de passe](#stockage-sécurisé-des-mots-de-passe)
+9. [Limites et améliorations](#limites-et-améliorations)
+
+## Synthèse : critères du challenge
+
+| Critère | Mise en œuvre | Preuve | Détails |
+|---|---|---|---|
+| Application déployée dans le cloud, accessible depuis Internet | AWS : ALB en HTTPS (TLS 1.3), WAF, ECS Fargate sur 2 zones, RDS PostgreSQL ; tout en Terraform | site en `200` en HTTPS, HTTP redirigé en `301`, 2 tâches saines ; vérifié par le job `Deploy (AWS)` à chaque déploiement | [Déploiement](#déploiement-sécurisé-sur-aws) |
+| Sécurisation du code source | Flake8, Bandit, Semgrep, pip-audit en CI ; relecture manuelle ; 11 problèmes corrigés ; en-têtes HTTP de sécurité | 0 alerte sur les 4 outils ; 32 tests unitaires | [Code source](#sécurisation-du-code-source) |
+| Image Docker construite et sécurisée dans la CI | image multi-étapes, base figée par digest, non root, sans pip ni setuid ; Hadolint, Trivy, Dockle | 0 vulnérabilité HIGH/CRITICAL corrigeable ; conteneur testé en lecture seule et sans capacités | [Image Docker](#image-docker-et-pipeline-ci) |
+| Déploiement sécurisé depuis une pipeline CI/CD | environnement `production` avec approbation, secrets limités à cet environnement, image testée réutilisée (pas reconstruite), `terraform plan` puis `apply`, Checkov, DAST OWASP ZAP | ZAP : 7 URL, 0 échec, 0 avertissement ; Checkov : 147 contrôles réussis, 0 échec | [Étape 3](#étape-3--déploiement-continu-depuis-la-pipeline) |
+| Stockage sécurisé des mots de passe | Argon2id (RFC 9106), sel unique, politique NIST SP 800-63B, anti-énumération ; secrets applicatifs dans AWS Secrets Manager, état Terraform chiffré par KMS | tests unitaires (empreinte, sel, rehachage, temps constant) | [Mots de passe](#stockage-sécurisé-des-mots-de-passe) |
+| README : architecture, cycle de vie, justifications | schémas d'architecture et du cycle de vie ; chaque choix et chaque exception justifiés | ce document | [Cycle de vie](#architecture-et-cycle-de-vie-sécurisé) |
+| Versioning, collaboration, maîtrise des accès | commits signés, ruleset sans contournement, PR obligatoire, checks obligatoires, approbation des déploiements, Dependabot | 15 pull requests, toutes passées par la pipeline | [Versioning](#gestion-sécurisée-du-versioning) |
+
+## Architecture et cycle de vie sécurisé
+
+### Architecture déployée
+
+```mermaid
+flowchart LR
+    user([Internet]) -->|"HTTPS 443, HTTP 80 redirigé"| waf["AWS WAF : limite /login, règles gérées"]
+    waf --> alb
+    subgraph vpc["VPC 10.0.0.0/16, 2 zones"]
+        subgraph pub["Sous-réseaux publics"]
+            alb["ALB, TLS 1.2+"]
+            nat[NAT Gateway]
+        end
+        subgraph app["Sous-réseaux applicatifs, privés"]
+            ecs["ECS Fargate, 2 tâches"]
+        end
+        subgraph db["Sous-réseaux base, sans route Internet"]
+            rds[("RDS PostgreSQL, chiffré, TLS")]
+        end
+    end
+    alb -->|8080| ecs
+    ecs -->|5432| rds
+    ecs -->|"443 via NAT"| aws["ECR, Secrets Manager, CloudWatch Logs"]
+    kms{{KMS}} -.chiffre.-> rds
+    kms -.chiffre.-> aws
+```
+
+Le détail de chaque couche (réseau, entrée, application, base, secrets) est dans [l'étape 2 du déploiement](#étape-2--infrastructure-de-lapplication).
+
+### Cycle de vie sécurisé d'une modification
+
+```mermaid
+flowchart TB
+    subgraph code["1. Code"]
+        dev["Branche dédiée"] --> commit["Commit signé (SSH ed25519)"]
+        commit --> pr["Pull request vers main"]
+    end
+    subgraph ci["2. Intégration continue : 12 contrôles obligatoires"]
+        lint["Flake8"]
+        sast["SAST : Bandit, Semgrep"]
+        sca["SCA : pip-audit"]
+        ut["Tests unitaires : pytest"]
+        hado["Hadolint"] --> build["Build de l'image"]
+        build --> ctest["Tests du conteneur durci"]
+        build --> trivy["Trivy : vulnérabilités"]
+        build --> dockle["Dockle : CIS Docker"]
+        iac["Terraform : fmt, validate, test"]
+        checkov["Checkov : configuration AWS"]
+    end
+    subgraph gate["3. Fusion"]
+        rules["Ruleset protect-main : checks verts, branche à jour, signature"]
+    end
+    subgraph cd["4. Déploiement continu (main)"]
+        approve{"Approbation, environnement production"} --> ecr["Image testée envoyée dans ECR"]
+        ecr --> tf["terraform plan puis apply"]
+        tf --> stable["ECS stable, image = commit"]
+    end
+    subgraph run["5. Exploitation"]
+        zap["DAST : OWASP ZAP sur l'URL publique"]
+        mon["Journaux : CloudWatch, WAF, ALB, flux VPC"]
+        dep["Dependabot : dépendances, image, actions, Terraform"]
+    end
+    pr --> ci
+    ci --> gate
+    gate --> cd
+    cd --> run
+    dep -.nouvelle PR.-> pr
+```
+
+| Phase | Risque traité | Contrôle | Bloquant |
+|---|---|---|---|
+| Code | usurpation d'auteur, modification non relue | commits signés, PR obligatoire, ruleset sans contournement | oui |
+| Code | secret écrit dans le dépôt | secrets lus dans l'environnement, `.dockerignore` en liste blanche, état Terraform hors du dépôt | — |
+| Intégration | faille dans le code Python | Bandit, Semgrep (`p/python`, `p/flask`) | oui |
+| Intégration | dépendance vulnérable | pip-audit, Dependabot | oui |
+| Intégration | régression fonctionnelle ou de sécurité | 32 tests unitaires, tests du conteneur | oui |
+| Intégration | image vulnérable ou mal configurée | Hadolint, Trivy (HIGH/CRITICAL), Dockle (CIS) | oui |
+| Intégration | infrastructure mal configurée | Checkov, tests Terraform | oui |
+| Déploiement | déploiement non autorisé | environnement `production` : approbation, branche `main` seule, secrets réservés | oui |
+| Déploiement | image différente de celle testée | réutilisation de l'artefact, tag = SHA, tags ECR immuables, vérification de l'image en service | oui |
+| Exploitation | faille visible de l'extérieur (en-têtes, cookies…) | DAST OWASP ZAP | oui |
+| Exploitation | attaque web, force brute | WAF (règles gérées, limite sur `/login`) | — |
+| Exploitation | vulnérabilité découverte après coup | Dependabot (hebdomadaire), scan ECR à l'envoi | — |
+| Exploitation | investigation d'un incident | journaux CloudWatch (application, WAF), ALB et flux VPC | — |
+
+### Les 14 jobs de la pipeline
+
+| Job | Outil | Quand | Obligatoire pour fusionner |
+|---|---|---|---|
+| `Lint (Flake8)` | Flake8 7.5.0 | PR et `main` | oui |
+| `Tests unitaires (pytest)` | pytest 9.2.0 | PR et `main` | oui |
+| `SAST (Bandit)` | Bandit 1.9.4 | PR et `main` | oui |
+| `SAST (Semgrep)` | Semgrep 1.185.0 | PR et `main` | oui |
+| `SCA (pip-audit)` | pip-audit 2.10.1 | PR et `main` | oui |
+| `Lint Dockerfile (Hadolint)` | Hadolint 2.15.1 | PR et `main` | oui |
+| `Build (image Docker)` | Docker | PR et `main` | oui |
+| `Tests du conteneur` | `smoke_test.sh` | PR et `main` | oui |
+| `Scan image (Trivy)` | Trivy 0.76.2 | PR et `main` | oui |
+| `Scan image (Dockle)` | Dockle 0.4.15 | PR et `main` | oui |
+| `IaC Terraform (fmt, validate, test)` | Terraform 1.17.1 | PR et `main` | oui |
+| `IaC (Checkov)` | Checkov 3.4.4 | PR et `main` | oui |
+| `Deploy (AWS)` | AWS CLI, Terraform | `main` seulement, après approbation | — |
+| `DAST (OWASP ZAP)` | ZAP 2.17.0 | `main` seulement, après le déploiement | — |
+
+### Incidents rencontrés et corrigés
+
+Chaque échec de la pipeline ou du déploiement a été analysé et corrigé à la source, sans masquer l'alerte :
+
+| Incident | Cause | Correction | Section |
+|---|---|---|---|
+| Trivy : 2 HIGH dans `zlib1g` | correctif Debian publié après l'image de base | mise à jour ciblée et figée | [Image Docker](#corrections-issues-de-la-première-exécution) |
+| Dockle : cache apt non vidé | faux positif (commande `apt-get dist-clean` non reconnue) | exception justifiée, absence de cache prouvée par un test | [Image Docker](#corrections-issues-de-la-première-exécution) |
+| PR Dependabot Python 3.15 rouge | image 3.15 construite avant le correctif `apt` (CVE-2026-109518) | `apt` 3.0.4 figé, PR remplacée | [Python 3.15](#passage-à-python-315-pr-dependabot-5) |
+| `terraform apply` refusé sur S3 | SCP du lab interdisant `s3:GetBucketObjectLockConfiguration` | buckets créés en AWS CLI, sécurité gérée par Terraform | [Étape 1](#correction--refus-dune-scp-du-learner-lab) |
+| RDS et security group refusés | PostgreSQL 18 (`log_connections`), apostrophe interdite par AWS | valeurs corrigées, test de régression | [Étape 2](#corrections-issues-du-premier-déploiement) |
+| Erreur Gunicorn en lecture seule | socket de contrôle de Gunicorn 27 | socket désactivé | [Étape 2](#application--ecs-fargate) |
+| `terraform plan` jamais vide | valeurs par défaut ajoutées par AWS | valeurs écrites explicitement | [Étape 3](#déploiements-reproductibles) |
+| ZAP : 9 avertissements | en-têtes HTTP de sécurité absents | en-têtes ajoutés dans l'application, testés | [Étape 3](#résultats-de-lanalyse-dynamique-owasp-zap) |
+| ZAP analysait des pages 403 | le WAF bloquait le robot sans `User-Agent` | ZAP identifié, garde-fous anti-403 | [Étape 3](#correction--le-waf-bloquait-le-scanner) |
+| Test unitaire instable | jeton CSRF horodaté à la seconde | comparaison sans la valeur du jeton | [Tests](#tests) |
 
 ## Contenu du dépôt
 
@@ -36,7 +173,7 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 
 ### Plateforme
 
-Le dépôt est hébergé sur **GitHub** et la CI/CD utilisera **GitHub Actions**. Les activités du cours utilisaient GitLab CI ; les outils de sécurité étudiés (Flake8, Bandit, Semgrep, Trivy, Hadolint, Dockle, ZAP, Checkov, TruffleHog) s'exécutent de la même façon dans GitHub Actions.
+Le dépôt est hébergé sur **GitHub** et la CI/CD utilise **GitHub Actions**. Les activités du cours utilisaient GitLab CI ; les outils de sécurité étudiés (Flake8, Bandit, Semgrep, Trivy, Hadolint, Dockle, ZAP, Checkov, TruffleHog) s'exécutent de la même façon dans GitHub Actions.
 
 ### Signature des commits
 
@@ -76,9 +213,11 @@ Un *ruleset* GitHub (`protect-main`) s'applique à la branche par défaut, **san
 | `Tests du conteneur` | fonctionnement et durcissement du conteneur | PR #4 |
 | `Scan image (Trivy)` | vulnérabilités de l'image | PR #4 |
 | `Scan image (Dockle)` | CIS Docker Benchmark | PR #4 |
-| `Tests unitaires (pytest)` | logique de l'application, stockage des mots de passe | PR du stockage des mots de passe |
-| `IaC Terraform (fmt, validate, test)` | format, validité et tests de l'infrastructure | PR du backend Terraform |
-| `IaC (Checkov)` | mauvaises configurations de l'infrastructure | PR du backend Terraform |
+| `Tests unitaires (pytest)` | logique de l'application, stockage des mots de passe | PR #6 (mots de passe) |
+| `IaC Terraform (fmt, validate, test)` | format, validité et tests de l'infrastructure | PR #10 (backend Terraform) |
+| `IaC (Checkov)` | mauvaises configurations de l'infrastructure | PR #10 |
+
+Les jobs `Deploy (AWS)` et `DAST (OWASP ZAP)` ne sont pas obligatoires pour fusionner : ils ne s'exécutent qu'**après** la fusion, sur `main`.
 
 Ces checks sont rattachés à **GitHub Actions** : un autre outil ou un statut posé à la main ne peut pas les satisfaire. La sécurité devient une **condition bloquante** de la livraison : aucune modification n'arrive sur `main` si un scan échoue, et la règle s'applique aussi au propriétaire du dépôt.
 
@@ -126,7 +265,7 @@ Les deux commits de documentation du début (`docs: ...`) sont antérieurs à l'
 
 ### Analyses automatiques (pipeline CI)
 
-Fichier : `.github/workflows/ci.yml`. La pipeline s'exécute à chaque pull request vers `main` et à chaque push sur `main`.
+Fichier : `.github/workflows/ci.yml`. La pipeline s'exécute à chaque pull request vers `main` et à chaque push sur `main`. Les jobs d'analyse du code source sont les suivants ; la liste complète des 14 jobs est dans [la synthèse](#les-14-jobs-de-la-pipeline).
 
 | Job | Outil | Type d'analyse | Ce qu'il vérifie |
 |---|---|---|---|
@@ -138,7 +277,7 @@ Fichier : `.github/workflows/ci.yml`. La pipeline s'exécute à chaque pull requ
 Choix de configuration :
 
 - `permissions: contents: read` : le jeton de la pipeline ne peut que lire le dépôt (moindre privilège).
-- `concurrency` avec `cancel-in-progress` : un nouveau push annule l'exécution en cours sur la même branche ; seul le résultat du dernier commit compte.
+- `concurrency` : sur une pull request, un nouveau push annule l'exécution en cours (seul le dernier commit compte) ; sur `main`, jamais, pour ne pas interrompre un déploiement.
 - Jobs indépendants et parallèles : un échec est immédiatement attribuable à un outil.
 - Semgrep tourne dans son image Docker officielle (il ne fonctionne pas nativement sous Windows).
 - En complément, **Dependabot** surveille en continu les dépendances du dépôt et ouvre des alertes dans l'onglet *Security*.
@@ -193,7 +332,7 @@ Détails de la correction du serveur (point 5) :
 
 - **Le problème** : `app.run(host='0.0.0.0')` lançait le serveur de développement de Flask, qui n'est pas conçu pour la production (un seul processus, pas de limites, pas de gestion des requêtes bloquées), sur toutes les interfaces réseau de la machine.
 - **Gunicorn** (version figée `27.0.0`, sans vulnérabilité connue selon pip-audit) sert l'application en production : `gunicorn main:app`, lancé depuis `app/app/`, lit automatiquement `gunicorn.conf.py`.
-- **Adresse d'écoute sûre par défaut** : `127.0.0.1:8080`. Elle n'est ouverte (`0.0.0.0:8080`) que par la variable d'environnement `GUNICORN_BIND`, qui sera définie **uniquement dans l'image Docker**. Un conteneur doit écouter sur toutes ses interfaces pour être joignable ; l'exposition réelle est alors contrôlée par le réseau (security group, load balancer), pas par l'application. Ce choix est explicite et documenté plutôt que masqué par un `# nosec`.
+- **Adresse d'écoute sûre par défaut** : `127.0.0.1:8080`. Elle n'est ouverte (`0.0.0.0:8080`) que par la variable d'environnement `GUNICORN_BIND`, qui est définie **uniquement dans l'image Docker**. Un conteneur doit écouter sur toutes ses interfaces pour être joignable ; l'exposition réelle est alors contrôlée par le réseau (security group, load balancer), pas par l'application. Ce choix est explicite et documenté plutôt que masqué par un `# nosec`.
 - **Configuration de durcissement** :
 
   | Paramètre | Valeur | Rôle |
@@ -205,13 +344,13 @@ Détails de la correction du serveur (point 5) :
   | `limit_request_field_size` | 8190 octets | taille d'un en-tête limitée |
   | `accesslog`, `errorlog` | sortie standard | journaux récupérés par Docker puis par AWS |
 
-- Gunicorn ne fonctionne pas sous Windows : il sera testé dans le conteneur Docker, lors de l'étape de la pipeline qui valide l'image.
+- Gunicorn ne fonctionne pas sous Windows : il est testé dans le conteneur Docker, par le job `Tests du conteneur`.
 
 Détails de la correction CSRF (point 8) :
 
 - **Le risque** : sans protection, un site malveillant peut faire envoyer le formulaire par le navigateur d'un visiteur à son insu (*Cross-Site Request Forgery*).
 - **Jeton CSRF** : Flask-WTF (version figée `1.3.0`, sans vulnérabilité connue selon pip-audit) ajoute à chaque formulaire un jeton aléatoire, signé et lié à la session. Toute requête `POST` sans jeton valide est refusée avec un code `400`. Un autre site ne peut pas lire ce jeton, donc ne peut pas forger la requête.
-- **Clé secrète** (`SECRET_KEY`) : elle signe les jetons et le cookie de session. Elle n'est **jamais écrite dans le code ni dans le dépôt** : elle est lue dans l'environnement et sera fournie en production par un gestionnaire de secrets AWS. Si elle est absente, l'application **refuse de démarrer** (*fail fast*) plutôt que de tourner avec une clé faible ou prévisible.
+- **Clé secrète** (`SECRET_KEY`) : elle signe les jetons et le cookie de session. Elle n'est **jamais écrite dans le code ni dans le dépôt** : elle est lue dans l'environnement et, sur AWS, injectée au démarrage du conteneur depuis **AWS Secrets Manager** (voir l'étape 2 du déploiement). Si elle est absente, l'application **refuse de démarrer** (*fail fast*) plutôt que de tourner avec une clé faible ou prévisible.
 - **Cookie de session durci** :
 
   | Attribut | Effet |
@@ -222,12 +361,7 @@ Détails de la correction CSRF (point 8) :
 
 - Vérifié : sans `SECRET_KEY` → démarrage refusé ; `POST` sans jeton → `400` ; jeton falsifié → `400` ; jeton valide → réponse normale ; cookie émis avec `Secure; HttpOnly; SameSite=Lax`.
 
-Lancer l'application en local (développement, HTTP) :
-
-```bash
-cd app/app
-SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") SESSION_COOKIE_SECURE=false python main.py
-```
+Pour lancer l'application en local, voir la section [Base de données](#base-de-données) (une base est désormais nécessaire).
 
 Détails de la correction du style (point 11) :
 
@@ -267,7 +401,7 @@ L'image est construite en **deux étapes** (*multi-stage build*) à partir d'une
 | Pas de cache pip | `--no-cache-dir` | image plus petite, pas de fichiers inutiles |
 | Secrets absents de l'image | `SECRET_KEY` fournie au lancement uniquement | une image publiée ou volée ne contient aucun secret |
 | Serveur de production | `CMD ["gunicorn", "main:app"]`, `GUNICORN_BIND=0.0.0.0:8080` | voir la correction du point 5 ; seul le conteneur ouvre l'écoute |
-| `HEALTHCHECK` | requête sur `/` toutes les 30 s | Docker, puis AWS, détectent un conteneur qui ne répond plus |
+| `HEALTHCHECK` | requête sur `/` toutes les 30 s | Docker détecte un conteneur qui ne répond plus ; sur AWS, ce rôle est tenu par le contrôle de santé de l'ALB |
 | `.dockerignore` en liste blanche | seul `app/app/` est envoyé au build | `.git`, `.venv`, la configuration CI ou un éventuel fichier de secrets ne peuvent pas entrer dans l'image par erreur |
 | Métadonnées OCI | `LABEL org.opencontainers.image.*` | traçabilité de l'image vers le dépôt source |
 
@@ -295,11 +429,11 @@ Trivy utilise `--ignore-unfixed` : une vulnérabilité sans correctif publié ne
 
 ### Tests du conteneur
 
-Le conteneur est lancé **comme en production, durci** : système de fichiers en lecture seule (`--read-only`, seul `/tmp` est inscriptible), aucune capacité Linux (`--cap-drop ALL`), pas d'élévation de privilèges (`no-new-privileges`), et une `SECRET_KEY` aléatoire générée pour le test.
+Le conteneur est lancé **comme en production, durci** : système de fichiers en lecture seule (`--read-only`, seuls `/tmp` et `/dev/shm` sont inscriptibles), aucune capacité Linux (`--cap-drop ALL`), pas d'élévation de privilèges (`no-new-privileges`), et une `SECRET_KEY` aléatoire générée pour le test.
 
 | # | Test | Résultat attendu |
 |---|---|---|
-| 1 | Démarrage sans `SECRET_KEY` | refusé |
+| 1 | Démarrage sans `SECRET_KEY`, puis sans base de données | refusé |
 | 2 | Requête sur `/` | Gunicorn répond |
 | 3 | `id -u` dans le conteneur | différent de 0 (non root) |
 | 4 | `python -m pip` | absent |
@@ -309,6 +443,8 @@ Le conteneur est lancé **comme en production, durci** : système de fichiers en
 | 8 | `POST /password` sans jeton CSRF | `400` |
 | 9 | Formulaire, jeton CSRF et mot de passe `password` | champ masqué, mot de passe détecté |
 | 10 | Mot de passe vide avec jeton valide | `400` |
+| 11 | Création de compte, mauvais mot de passe, connexion (avec jetons CSRF) | `201`, `401`, `302` |
+| 12 | En-têtes HTTP | `Server` sans numéro de version, `Cache-Control: no-store`, CSP, HSTS, `X-Frame-Options`… présents |
 
 ### Corrections issues de la première exécution
 
@@ -337,9 +473,9 @@ La PR Dependabot n'a pas été fusionnée telle quelle : la montée de version e
 ### Sécurité de la chaîne CI elle-même
 
 - **Actions figées par SHA** (`actions/checkout@3d3c42e…  # v7.0.1`) : un tag peut être déplacé vers du code malveillant, une empreinte de commit non. Les versions sont rappelées en commentaire.
-- **Outils figés par version** (Flake8, Bandit, pip-audit, Semgrep, Hadolint, Trivy, Dockle) : un même code donne toujours le même résultat de scan.
+- **Outils figés par version** (Flake8, Bandit, pip-audit, Semgrep, Hadolint, Trivy, Dockle, Terraform, Checkov, OWASP ZAP) : un même code donne toujours le même résultat de scan.
 - **`persist-credentials: false`** : le jeton GitHub n'est pas laissé dans le dépôt cloné, les étapes suivantes ne peuvent pas le réutiliser.
-- **Dependabot** (`.github/dependabot.yml`) propose chaque semaine les mises à jour des dépendances Python, de l'image de base et des actions. Chaque mise à jour arrive en pull request et doit passer les checks obligatoires.
+- **Dependabot** (`.github/dependabot.yml`) propose chaque semaine les mises à jour des dépendances Python, de l'image de base, des actions et des fournisseurs Terraform. Chaque mise à jour arrive en pull request et doit passer les checks obligatoires.
 
 ## Déploiement sécurisé sur AWS
 
@@ -355,7 +491,7 @@ Le déploiement cible un compte **AWS Academy Learner Lab**, région `us-east-1`
 | Une **SCP** (politique de l'organisation AWS Academy) refuse `s3:GetBucketObjectLockConfiguration` | les buckets S3 sont créés par un script AWS CLI ; Terraform applique toute leur configuration de sécurité (voir l'étape 1) | ressource `aws_s3_bucket` gérée entièrement par Terraform |
 | Budget limité | un seul NAT Gateway au lieu d'un par zone ; infrastructure détruite en fin de session (`terraform destroy`) | un NAT par zone pour la haute disponibilité |
 
-### Architecture cible
+### Architecture
 
 L'infrastructure est entièrement décrite en **Terraform** (*Infrastructure as Code*) : elle est relue en pull request, analysée par Checkov et reproductible.
 
@@ -367,38 +503,17 @@ L'infrastructure est entièrement décrite en **Terraform** (*Infrastructure as 
 - **Images** : **ECR** avec scan à l'envoi et tags immuables (une image publiée ne peut pas être remplacée).
 - **Journaux** : **CloudWatch Logs** pour les conteneurs et le WAF ; bucket S3 pour l'ALB et les flux réseau du VPC.
 
-```mermaid
-flowchart LR
-    user([Internet]) -->|HTTPS 443<br/>HTTP 80 redirigé| waf[AWS WAF<br/>limite /login<br/>règles gérées]
-    waf --> alb
-    subgraph vpc[VPC 10.0.0.0/16, 2 zones]
-        subgraph pub[Sous-réseaux publics]
-            alb[ALB<br/>TLS 1.2+]
-            nat[NAT Gateway]
-        end
-        subgraph app[Sous-réseaux applicatifs, privés]
-            ecs[ECS Fargate<br/>2 tâches]
-        end
-        subgraph db[Sous-réseaux base, sans route Internet]
-            rds[(RDS PostgreSQL<br/>chiffré, TLS)]
-        end
-    end
-    alb -->|8080| ecs
-    ecs -->|5432| rds
-    ecs -->|443 via NAT| aws[ECR, Secrets Manager,<br/>CloudWatch Logs]
-    kms{{KMS}} -.chiffre.-> rds
-    kms -.chiffre.-> aws
-```
+Schéma : voir [Architecture déployée](#architecture-déployée).
 
 ### Plan de réalisation
 
-Le déploiement est découpé en trois pull requests, chacune analysée par la pipeline :
+Le déploiement a été réalisé en trois étapes, chacune livrée par pull request et analysée par la pipeline (les PR de correction sont citées entre parenthèses) :
 
 | Étape | Branche | Contenu | Critère |
 |---|---|---|---|
-| 1 | `feat/terraform-backend` | stockage sécurisé de l'état Terraform, jobs Terraform et Checkov dans la CI | prérequis |
-| 2 | `feat/aws-infra` | réseau, ALB et WAF, ECS Fargate, RDS, Secrets Manager, CloudWatch (`infra/platform`) ; ECR et bucket de journaux (`infra/bootstrap`) ; adaptation de l'application | application déployée dans le cloud |
-| 3 | `ci/deploy` | pipeline de déploiement sur `main` : push de l'image vers ECR, `terraform apply`, puis analyse dynamique (DAST) avec **OWASP ZAP** sur l'URL publique | déploiement sécurisé depuis la CI/CD |
+| 1 | `feat/terraform-backend`, PR #10 (#11) | stockage sécurisé de l'état Terraform, jobs Terraform et Checkov dans la CI | prérequis |
+| 2 | `feat/aws-infra`, PR #12 (#13) | réseau, ALB et WAF, ECS Fargate, RDS, Secrets Manager, CloudWatch (`infra/platform`) ; ECR et bucket de journaux (`infra/bootstrap`) ; adaptation de l'application | application déployée dans le cloud |
+| 3 | `ci/deploy`, PR #14 (#15) | pipeline de déploiement sur `main` : push de l'image vers ECR, `terraform apply`, puis analyse dynamique (DAST) avec **OWASP ZAP** sur l'URL publique | déploiement sécurisé depuis la CI/CD |
 
 ### Étape 1 : stockage sécurisé de l'état Terraform
 
@@ -543,9 +658,9 @@ Terraform reprend là où il s'est arrêté : un nouveau `terraform apply` ne cr
 
 Résultat après correction : l'application répond en **HTTPS (`200`)**, le HTTP est redirigé (`301`), la connexion est négociée en **TLS 1.3**, et les deux tâches ECS sont saines dans le groupe cible de l'ALB. Au démarrage, Gunicorn charge l'application, qui se connecte à RDS en TLS et crée la table des utilisateurs : son démarrage sans erreur prouve que le mot de passe injecté depuis Secrets Manager et la connexion chiffrée fonctionnent.
 
-#### Déployer et détruire (manuellement, avant l'étape 3)
+#### Déployer et détruire manuellement (sans la pipeline)
 
-Prérequis : identifiants du lab chargés, `infra/bootstrap` appliqué (il crée le dépôt ECR et le bucket de journaux).
+Avant l'étape 3, le déploiement se faisait depuis le poste de développement ; ces commandes restent utiles pour un dépannage. Prérequis : identifiants du lab chargés, `infra/bootstrap` appliqué (il crée le dépôt ECR et le bucket de journaux).
 
 ```bash
 # 1. Image : construite pour l'architecture de Fargate (x86_64) et envoyée dans ECR
@@ -774,3 +889,19 @@ Le job Flake8 analyse aussi désormais le dossier `tests/`.
 Correction d'un test instable (*flaky*) : `test_login_wrong_password_and_unknown_user_same_answer` comparait les deux pages octet par octet et a échoué une fois en CI. Les pages ne différaient que par la valeur du **jeton CSRF**, que Flask-WTF signe avec un horodatage à la seconde : deux connexions servies à des secondes différentes (chacune dure environ 0,5 s à cause d'Argon2id) donnent deux jetons différents. Le test compare désormais les pages sans la valeur du jeton, après avoir vérifié qu'il est bien présent. La cause a été reproduite : avec 1,1 s d'écart, les pages brutes diffèrent, et sont identiques sans le jeton. La propriété testée (aucune différence permettant de savoir si un compte existe) est inchangée.
 
 **Tests du conteneur** : `smoke_test.sh` vérifie en plus le refus de démarrer sans `DATABASE_URL`, puis, dans le conteneur durci, la création d'un compte (`201`), le refus d'un mauvais mot de passe (`401`) et la connexion (`302`), avec les jetons CSRF, puis les en-têtes de sécurité HTTP (dont un en-tête `Server` sans numéro de version).
+
+## Limites et améliorations
+
+Le projet tourne dans un AWS Academy Learner Lab : plusieurs choix sont imposés par ses restrictions ou par son budget. Chacun est documenté là où il intervient ; voici ce qui changerait en production.
+
+| Limite actuelle | Raison | En production |
+|---|---|---|
+| Identifiants AWS statiques dans les secrets GitHub, recollés à chaque session | fournisseur OIDC interdit dans le lab | fédération **OIDC** GitHub → AWS : aucun secret stocké, jeton de quelques minutes, rôle limité à ce dépôt et à `main` |
+| Un seul rôle (`LabRole`) pour l'exécution et les tâches ECS | création de rôles IAM interdite | un rôle par usage, limité au strict nécessaire (Checkov `CKV_AWS_249`) |
+| Certificat auto-signé, avertissement du navigateur | pas de nom de domaine | certificat ACM validé par DNS, HSTS avec `includeSubDomains` |
+| Un NAT, RDS sans Multi-AZ, pas de protection contre la suppression | budget, infrastructure détruite chaque soir | NAT par zone, RDS Multi-AZ, `deletion_protection` |
+| Mot de passe RDS lu au démarrage des conteneurs | simplicité | relecture du secret à la connexion, ou authentification IAM de RDS (déjà activée) |
+| 0 approbation de PR requise | projet réalisé seul | au moins 1 relecteur, propriétaires de code (`CODEOWNERS`) |
+| DAST passif (*baseline*) non authentifié | durée du scan, application en ligne | scan actif complet et authentifié sur un environnement de préproduction |
+| Pas d'alertes automatiques | hors périmètre | alarmes CloudWatch, GuardDuty, Security Hub |
+| Image non signée, pas de SBOM publié | hors périmètre | signature (cosign) vérifiée avant déploiement, SBOM généré en CI |
