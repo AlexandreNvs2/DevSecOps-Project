@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="676" viewBox="0 0 680 676" role="img" aria-labelledby="t d">
+<title id="t">Architecture AWS de l'application</title>
+<desc id="d">Internet passe par le WAF puis l'ALB en HTTPS dans le sous-réseau public, vers deux tâches ECS Fargate privées sur deux zones, qui accèdent à la base RDS PostgreSQL privée sans route Internet. La passerelle NAT ne sert qu'aux sorties. ECR, Secrets Manager, CloudWatch et KMS sont hors du VPC.</desc>
+<style>
+text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;dominant-baseline:central}
+.th{font-size:14px;font-weight:500;text-anchor:middle}
+.ts{font-size:12px;text-anchor:middle}
+.lh{font-size:14px;font-weight:500;fill:#2C2C2A}
+.ls{font-size:12px;fill:#5F5E5A}
+.lg{font-size:12px;fill:#444441}
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#5F5E5A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect x="0" y="0" width="680" height="676" rx="12" fill="#FFFFFF"/>
+<rect x="260" y="20" width="160" height="44" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/><text x="340.0" y="42.0" class="th" fill="#444441">Internet</text>
+<line x1="340" y1="64" x2="340" y2="94" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<rect x="210" y="96" width="260" height="56" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="0.8"/><text x="340.0" y="114" class="th" fill="#712B13">AWS WAF</text><text x="340.0" y="134" class="ts" fill="#993C1D">Pare-feu applicatif</text>
+<rect x="40" y="176" width="600" height="348" rx="20" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/><text x="60" y="196" class="lh" fill="#444441">VPC : réseau privé, 2 zones</text>
+<rect x="60" y="212" width="560" height="88" rx="8" fill="none" stroke="#B4B2A9" stroke-width="0.8" stroke-dasharray="4 4"/><text x="76" y="248" class="lh">Public</text><text x="76" y="268" class="ls">Entrée, sortie</text>
+<rect x="60" y="316" width="560" height="88" rx="8" fill="none" stroke="#B4B2A9" stroke-width="0.8" stroke-dasharray="4 4"/><text x="76" y="352" class="lh">Privé</text><text x="76" y="372" class="ls">Conteneurs</text>
+<rect x="60" y="420" width="560" height="88" rx="8" fill="none" stroke="#B4B2A9" stroke-width="0.8" stroke-dasharray="4 4"/><text x="76" y="456" class="lh">Privé</text><text x="76" y="476" class="ls">Base, sans Internet</text>
+<line x1="340" y1="152" x2="340" y2="226" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<rect x="250" y="228" width="180" height="56" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="0.8"/><text x="340.0" y="246" class="th" fill="#712B13">ALB</text><text x="340.0" y="266" class="ts" fill="#993C1D">HTTPS, TLS 1.3</text>
+<rect x="470" y="228" width="140" height="56" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="0.8"/><text x="540.0" y="246" class="th" fill="#712B13">NAT</text><text x="540.0" y="266" class="ts" fill="#993C1D">Sorties seulement</text>
+<line x1="310" y1="284" x2="287" y2="330" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<line x1="380" y1="284" x2="500" y2="330" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<rect x="190" y="332" width="190" height="56" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/><text x="285.0" y="350" class="th" fill="#085041">Tâche ECS, zone a</text><text x="285.0" y="370" class="ts" fill="#0F6E56">Fargate, lecture seule</text>
+<rect x="410" y="332" width="190" height="56" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/><text x="505.0" y="350" class="th" fill="#085041">Tâche ECS, zone b</text><text x="505.0" y="370" class="ts" fill="#0F6E56">Fargate, lecture seule</text>
+<line x1="575" y1="332" x2="575" y2="286" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<line x1="285" y1="388" x2="360" y2="434" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<line x1="505" y1="388" x2="440" y2="434" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<rect x="300" y="436" width="200" height="56" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/><text x="400.0" y="454" class="th" fill="#085041">RDS PostgreSQL</text><text x="400.0" y="474" class="ts" fill="#0F6E56">Chiffrée, TLS</text>
+<line x1="266" y1="524" x2="266" y2="566" stroke="#5F5E5A" stroke-width="1.2" marker-end="url(#a)"/>
+<rect x="50" y="568" width="136" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/><text x="118.0" y="586" class="th" fill="#444441">ECR</text><text x="118.0" y="606" class="ts" fill="#5F5E5A">Images Docker</text>
+<rect x="198" y="568" width="136" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/><text x="266.0" y="586" class="th" fill="#444441">Secrets Manager</text><text x="266.0" y="606" class="ts" fill="#5F5E5A">Secrets chiffrés</text>
+<rect x="346" y="568" width="136" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/><text x="414.0" y="586" class="th" fill="#444441">CloudWatch</text><text x="414.0" y="606" class="ts" fill="#5F5E5A">Journaux</text>
+<rect x="494" y="568" width="136" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/><text x="562.0" y="586" class="th" fill="#444441">KMS</text><text x="562.0" y="606" class="ts" fill="#5F5E5A">Clés de chiffrement</text>
+<rect x="60" y="646" width="14" height="14" rx="3" fill="#FAECE7" stroke="#993C1D" stroke-width="0.8"/><text x="82" y="653" class="lg">Exposé à Internet</text>
+<rect x="230" y="646" width="14" height="14" rx="3" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.8"/><text x="252" y="653" class="lg">Privé, injoignable de l'extérieur</text>
+<rect x="470" y="646" width="14" height="14" rx="3" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.8"/><text x="492" y="653" class="lg">Services AWS</text>
+</svg>
