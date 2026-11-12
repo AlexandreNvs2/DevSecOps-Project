@@ -762,7 +762,7 @@ SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") DATABASE_
 | `test_register_rejects_short_password`, `..._equal_to_username`, `..._mismatched_confirmation`, `..._invalid_username` | la politique de mot de passe et d'identifiant |
 | `test_register_rejects_duplicate_username` | doublon refusé (`409`), y compris en changeant la casse |
 | `test_login_success_opens_session` | connexion valide |
-| `test_login_wrong_password_and_unknown_user_same_answer` | réponses identiques : pas d'énumération |
+| `test_login_wrong_password_and_unknown_user_same_answer` | réponses identiques (au jeton CSRF près, horodaté) : pas d'énumération |
 | `test_logout_clears_session` | déconnexion |
 | `test_login_rehashes_outdated_hash` | une empreinte aux anciens paramètres est recalculée à la connexion |
 | `test_password_check_*` | la fonctionnalité d'origine (listes SecLists, validation des entrées) |
@@ -770,5 +770,7 @@ SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") DATABASE_
 | `test_database_url.py` (8 tests) | construction de l'adresse de la base sur AWS : priorité à `DATABASE_URL`, caractères spéciaux du mot de passe échappés, `sslmode=require`, mot de passe masqué à l'affichage, refus de démarrer sans configuration |
 
 Le job Flake8 analyse aussi désormais le dossier `tests/`.
+
+Correction d'un test instable (*flaky*) : `test_login_wrong_password_and_unknown_user_same_answer` comparait les deux pages octet par octet et a échoué une fois en CI. Les pages ne différaient que par la valeur du **jeton CSRF**, que Flask-WTF signe avec un horodatage à la seconde : deux connexions servies à des secondes différentes (chacune dure environ 0,5 s à cause d'Argon2id) donnent deux jetons différents. Le test compare désormais les pages sans la valeur du jeton, après avoir vérifié qu'il est bien présent. La cause a été reproduite : avec 1,1 s d'écart, les pages brutes diffèrent, et sont identiques sans le jeton. La propriété testée (aucune différence permettant de savoir si un compte existe) est inchangée.
 
 **Tests du conteneur** : `smoke_test.sh` vérifie en plus le refus de démarrer sans `DATABASE_URL`, puis, dans le conteneur durci, la création d'un compte (`201`), le refus d'un mauvais mot de passe (`401`) et la connexion (`302`), avec les jetons CSRF, puis les en-têtes de sécurité HTTP (dont un en-tête `Server` sans numéro de version).
