@@ -27,7 +27,8 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 - `tests/container/smoke_test.sh` : tests de fonctionnement et de sécurité du conteneur.
 - `infra/bootstrap/` : ressources permanentes : script de création des buckets S3 (`create-buckets.sh`), configuration de sécurité de l'état Terraform (clé KMS, chiffrement, versioning, journaux d'accès), bucket des journaux de l'infrastructure, dépôt d'images ECR, et leurs tests.
 - `infra/platform/` : infrastructure de l'application (VPC, ALB, WAF, ECS Fargate, RDS, Secrets Manager, CloudWatch) et ses tests ; détruite en fin de session.
-- `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
+- `.github/workflows/ci.yml` : pipeline CI/CD GitHub Actions (analyses, construction, tests, déploiement sur AWS, analyse dynamique).
+- `.zap/rules.tsv` : alertes OWASP ZAP ignorées, chacune avec sa justification.
 - `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base, des actions et des fournisseurs Terraform.
 - `CLAUDE.md` : contexte du projet pour l'assistant IA Claude Code (règles de travail, état d'avancement, contraintes AWS). Il permet de reprendre le travail sur une autre machine et documente de façon transparente l'usage de l'IA : l'assistant a rédigé le code et la documentation en expliquant chaque choix ; les commits, les push, les fusions et la configuration GitHub ont été faits par l'auteur.
 
@@ -567,6 +568,80 @@ terraform apply -var "image_tag=$TAG"
 terraform destroy -var "image_tag=$TAG"
 ```
 
+### Étape 3 : déploiement continu depuis la pipeline
+
+À chaque fusion sur `main`, la pipeline déploie automatiquement **l'image qu'elle vient de tester et d'analyser**, puis attaque l'application en ligne avec OWASP ZAP. Plus aucune commande manuelle n'est nécessaire, en dehors de l'approbation.
+
+```mermaid
+flowchart LR
+    pr[Pull request] --> ci[12 contrôles<br/>obligatoires]
+    ci -->|fusion sur main| ci2[12 contrôles<br/>relancés sur main]
+    ci2 --> ok{Approbation<br/>production}
+    ok --> ecr[Image testée<br/>envoyée dans ECR]
+    ecr --> tf[terraform plan<br/>puis apply]
+    tf --> wait[ECS stable,<br/>image = commit]
+    wait --> zap[DAST<br/>OWASP ZAP]
+```
+
+#### Jobs ajoutés
+
+| Job | Ce qu'il fait | Garanties de sécurité |
+|---|---|---|
+| `Deploy (AWS)` | envoie l'image dans ECR (tag = SHA du commit), `terraform plan` puis `apply` de ce plan, attend la stabilité du service ECS, vérifie l'application en HTTPS | ne démarre que sur un push sur `main` et après la réussite des **12 contrôles** ; l'image envoyée est l'**artefact** testé et scanné, pas une reconstruction ; le job vérifie que l'image en service porte bien le SHA du commit |
+| `DAST (OWASP ZAP)` | scan *baseline* (passif) de l'URL publique, rapport HTML et JSON en artefact (30 jours) | tout avertissement fait échouer la pipeline, sauf les alertes ignorées avec justification dans `.zap/rules.tsv` |
+
+#### Maîtrise de l'accès au déploiement
+
+| Mesure | Détail | Pourquoi |
+|---|---|---|
+| **Environnement GitHub `production`** | le job `Deploy (AWS)` déclare `environment: production` | les secrets AWS n'existent que dans cet environnement : aucun autre job, aucune pull request ne peut les lire |
+| **Approbation obligatoire** | *required reviewer* sur l'environnement | aucun déploiement sans validation humaine explicite, tracée dans GitHub |
+| Déploiement limité à `main` | condition `github.ref == 'refs/heads/main'`, règle de branche de l'environnement | une branche de travail ou une PR (même d'un fork) ne peut jamais déployer |
+| Un seul déploiement à la fois | `concurrency: deploy-production`, jamais annulé ; la pipeline n'est plus annulée sur `main` | un `terraform apply` interrompu laisserait l'infrastructure dans un état intermédiaire ; l'état est en plus verrouillé dans S3 |
+| Pas d'action tierce pour AWS | AWS CLI préinstallée sur le runner, Terraform dans son image officielle figée | moins de code externe ayant accès aux identifiants |
+| Identifiants vérifiés d'abord | `aws sts get-caller-identity`, message clair s'ils ont expiré | échec immédiat et explicite plutôt qu'au milieu du déploiement |
+| Variable injectée sans interpolation | l'URL passe par `env:` et non `${{ … }}` dans le script | pas d'injection de commande par une valeur extérieure |
+
+**Limite du lab : identifiants statiques.** Le Learner Lab interdit de créer un fournisseur OIDC : les identifiants temporaires du lab (valables environ 4 h) sont stockés comme secrets de l'environnement et doivent être recollés à chaque session. En production, GitHub s'authentifierait auprès d'AWS par **OIDC** : aucun secret stocké, un jeton de quelques minutes par exécution, et un rôle IAM limité au déploiement de ce dépôt et de cette branche.
+
+#### Résultats de l'analyse dynamique (OWASP ZAP)
+
+Un premier scan de l'application déployée à l'étape 2 a levé **9 avertissements, 0 échec**, tous liés à des en-têtes HTTP de sécurité absents. Ils ont été corrigés dans l'application (`main.py`, fonction `set_security_headers`), donc partout : en local, dans Docker et sur AWS.
+
+| Alerte ZAP | Correction |
+|---|---|
+| 10035 Strict-Transport-Security absent | `Strict-Transport-Security: max-age=31536000` : le navigateur impose HTTPS pendant un an |
+| 10038 Content Security Policy absente | `default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` : aucune ressource externe, aucun script ni style en ligne (le seul attribut `style` des templates a été retiré) |
+| 10020 protection contre le *clickjacking* absente | `X-Frame-Options: DENY` et `frame-ancestors 'none'` |
+| 10021 X-Content-Type-Options absent | `X-Content-Type-Options: nosniff` |
+| 10063 Permissions-Policy absente | caméra, micro, géolocalisation, paiement et USB désactivés |
+| 90004 Cross-Origin-Embedder-Policy absente | `Cross-Origin-Embedder-Policy: require-corp`, plus `Cross-Origin-Opener-Policy` et `Cross-Origin-Resource-Policy` en `same-origin` |
+| 10015 directives de cache à revoir | `Cache-Control: no-store` : les pages personnelles (identifiant, jeton CSRF) ne sont jamais mises en cache |
+| — (bonne pratique) | `Referrer-Policy: no-referrer` |
+
+Alertes ignorées, avec justification (`.zap/rules.tsv`) et preuve :
+
+| Alerte | Justification | Preuve |
+|---|---|---|
+| 10036 version du serveur divulguée | l'en-tête vaut `Server: gunicorn`, **sans numéro de version**, et Gunicorn ne permet pas de le retirer | `smoke_test.sh` vérifie l'absence de chiffre dans l'en-tête |
+| 10049 contenu non stockable | alerte informative : c'est l'effet voulu de `Cache-Control: no-store` | `test_security_headers_on_every_page`, `smoke_test.sh` |
+| 10111 requête d'authentification identifiée | alerte informative : ZAP signale qu'il a trouvé le formulaire de connexion ; la force brute est limitée par le WAF | test Terraform `pare_feu_applicatif` |
+| 10112 gestion de session identifiée | alerte informative : ZAP signale le cookie de session | `test_session_cookie_flags` (`HttpOnly`, `SameSite=Lax`) et `test_session_cookie_secure_by_default` |
+
+Après correction, le même scan sur l'image locale : **0 échec, 0 avertissement non justifié** (les alertes 10111 et 10112 apparaissent quand le robot de ZAP atteint le formulaire de connexion). Le résultat sur l'application déployée est publié par chaque exécution du job `DAST (OWASP ZAP)`.
+
+#### Déploiements reproductibles
+
+Un `terraform plan` sur l'infrastructure déployée affichait des modifications alors que rien n'avait changé : AWS complète la définition de tâche ECS avec des valeurs par défaut (`hostPort`, listes vides) et marque `rds.force_ssl` comme paramètre statique (`pending-reboot`). Ces valeurs sont désormais écrites explicitement : sur l'infrastructure en place, le plan affiche **« No changes »**, et chaque déploiement ne modifie que ce qui a réellement changé (en pratique, l'image).
+
+#### Mise en place (une fois, puis à chaque session du lab)
+
+1. GitHub, *Settings → Environments → New environment* : `production`.
+   - *Required reviewers* : soi-même ; *Deployment branches and tags* : `main` uniquement.
+   - *Environment variables* : `TF_STATE_BUCKET` = nom du bucket de l'état (`terraform -chdir=infra/bootstrap output -raw state_bucket`).
+2. À chaque « Start Lab » : *Environment secrets* `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (panneau *AWS Details* du lab). Ils ne sont jamais écrits dans le dépôt ni affichés dans les journaux.
+3. En fin de session : `terraform destroy` depuis `infra/platform` (budget). Le prochain déploiement recrée tout.
+
 ### Sécurité de l'Infrastructure as Code dans la CI
 
 Deux jobs analysent le dossier `infra/` à chaque pull request, sans aucun identifiant AWS :
@@ -675,8 +750,9 @@ SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") DATABASE_
 | `test_logout_clears_session` | déconnexion |
 | `test_login_rehashes_outdated_hash` | une empreinte aux anciens paramètres est recalculée à la connexion |
 | `test_password_check_*` | la fonctionnalité d'origine (listes SecLists, validation des entrées) |
+| `test_security_headers.py` (10 tests) | en-têtes de sécurité HTTP sur toutes les pages et les erreurs, CSP stricte, aucun style ni script en ligne dans les templates, attributs du cookie de session |
 | `test_database_url.py` (8 tests) | construction de l'adresse de la base sur AWS : priorité à `DATABASE_URL`, caractères spéciaux du mot de passe échappés, `sslmode=require`, mot de passe masqué à l'affichage, refus de démarrer sans configuration |
 
 Le job Flake8 analyse aussi désormais le dossier `tests/`.
 
-**Tests du conteneur** : `smoke_test.sh` vérifie en plus le refus de démarrer sans `DATABASE_URL`, puis, dans le conteneur durci, la création d'un compte (`201`), le refus d'un mauvais mot de passe (`401`) et la connexion (`302`), avec les jetons CSRF.
+**Tests du conteneur** : `smoke_test.sh` vérifie en plus le refus de démarrer sans `DATABASE_URL`, puis, dans le conteneur durci, la création d'un compte (`201`), le refus d'un mauvais mot de passe (`401`) et la connexion (`302`), avec les jetons CSRF, puis les en-têtes de sécurité HTTP (dont un en-tête `Server` sans numéro de version).
