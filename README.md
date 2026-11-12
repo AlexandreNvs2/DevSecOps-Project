@@ -218,7 +218,7 @@ Un *ruleset* GitHub (`protect-main`) s'applique à la branche par défaut, **san
 | `Tests unitaires (pytest)` | logique de l'application, stockage des mots de passe | PR #6 (mots de passe) |
 | `IaC Terraform (fmt, validate, test)` | format, validité et tests de l'infrastructure | PR #10 (backend Terraform) |
 | `IaC (Checkov)` | mauvaises configurations de l'infrastructure | PR #10 |
-| `Secrets (TruffleHog)` | secrets dans tout l'historique Git | PR de TruffleHog |
+| `Secrets (TruffleHog)` | secrets dans tout l'historique Git | PR #17 (TruffleHog) |
 
 Les jobs `Deploy (AWS)` et `DAST (OWASP ZAP)` ne sont pas obligatoires pour fusionner : ils ne s'exécutent qu'**après** la fusion, sur `main`.
 
