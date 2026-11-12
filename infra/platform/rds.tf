@@ -32,9 +32,11 @@ resource "aws_db_parameter_group" "main" {
     value = "1000"
   }
 
+  # PostgreSQL 18 : log_connections n'est plus un booléen mais une liste
+  # d'étapes (réception, authentification, autorisation).
   parameter {
     name  = "log_connections"
-    value = "1"
+    value = "all"
   }
 }
 
