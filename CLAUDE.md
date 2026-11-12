@@ -29,7 +29,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 
 - GitHub : https://github.com/AlexandreNvs2/DevSecOps-Project, CI/CD avec **GitHub Actions** (le cours utilisait GitLab ; choix assumé et documenté).
 - Ruleset `protect-main` sur `main`, sans aucune exception : PR obligatoire (0 approbation, projet réalisé seul), **commits signés** (SSH ed25519), pas de force push ni de suppression, discussions résolues, fusion par merge ou squash (pas de rebase), branche à jour et **checks obligatoires**.
-- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)`, `IaC Terraform (fmt, validate, test)`, `IaC (Checkov)` (12 checks, vérifié le 12 novembre 2026). `Deploy (AWS)` et `DAST (OWASP ZAP)` ne sont pas obligatoires : ils ne tournent qu'après la fusion, sur `main`.
+- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)`, `IaC Terraform (fmt, validate, test)`, `IaC (Checkov)`, `Secrets (TruffleHog)` (13 checks, PR #17). `Deploy (AWS)` et `DAST (OWASP ZAP)` ne sont pas obligatoires : ils ne tournent qu'après la fusion, sur `main`.
 - Dependabot actif (pip, image Docker, actions GitHub).
 
 ## Architecture actuelle
@@ -70,7 +70,7 @@ Conséquences : utiliser `LabRole` comme rôle d'exécution et de tâche ECS ; p
 
 ## Prochaines étapes
 
-1. Après fusion de `ci/trufflehog` : ajouter `Secrets (TruffleHog)` aux checks obligatoires du ruleset (13 checks), et remplacer « PR de TruffleHog » par son numéro dans le README.
+Aucune étape obligatoire restante : les 7 critères sont traités. Pistes facultatives : voir « Limites et améliorations » dans le README.
 
 ## Reprendre une session sur le lab AWS
 
