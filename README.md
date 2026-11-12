@@ -14,7 +14,8 @@ L'application est déployée sur AWS (ECS Fargate derrière un load balancer et 
 6. [Image Docker et pipeline CI](#image-docker-et-pipeline-ci)
 7. [Déploiement sécurisé sur AWS](#déploiement-sécurisé-sur-aws)
 8. [Stockage sécurisé des mots de passe](#stockage-sécurisé-des-mots-de-passe)
-9. [Limites et améliorations](#limites-et-améliorations)
+9. [Vérifier le projet en direct](#vérifier-le-projet-en-direct)
+10. [Limites et améliorations](#limites-et-améliorations)
 
 ## Synthèse : critères du challenge
 
@@ -31,6 +32,13 @@ L'application est déployée sur AWS (ECS Fargate derrière un load balancer et 
 ## Architecture et cycle de vie sécurisé
 
 ### Architecture déployée
+
+![Architecture AWS : Internet, WAF, ALB en HTTPS dans le sous-réseau public, deux tâches ECS Fargate privées, base RDS PostgreSQL privée sans route Internet](docs/architecture.svg)
+
+Plus on descend, plus c'est protégé : seuls le pare-feu applicatif et le répartiteur de charge sont exposés, les conteneurs sont privés, et la base n'a aucun accès à Internet. Chaque niveau n'accepte que le niveau juste au-dessus (groupes de sécurité). La passerelle NAT ne permet que les sorties (téléchargement de l'image, lecture des secrets, envoi des journaux).
+
+<details>
+<summary>Même schéma au format Mermaid (texte)</summary>
 
 ```mermaid
 flowchart LR
@@ -54,6 +62,8 @@ flowchart LR
     kms{{KMS}} -.chiffre.-> rds
     kms -.chiffre.-> aws
 ```
+
+</details>
 
 Le détail de chaque couche (réseau, entrée, application, base, secrets) est dans [l'étape 2 du déploiement](#étape-2--infrastructure-de-lapplication).
 
@@ -168,6 +178,7 @@ Chaque échec de la pipeline ou du déploiement a été analysé et corrigé à 
 - `infra/platform/` : infrastructure de l'application (VPC, ALB, WAF, ECS Fargate, RDS, Secrets Manager, CloudWatch) et ses tests ; détruite en fin de session.
 - `.github/workflows/ci.yml` : pipeline CI/CD GitHub Actions (analyses, construction, tests, déploiement sur AWS, analyse dynamique).
 - `.zap/rules.tsv` : alertes OWASP ZAP ignorées, chacune avec sa justification.
+- `docs/architecture.svg` : schéma de l'architecture AWS.
 - `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base, des actions et des fournisseurs Terraform.
 - `CLAUDE.md` : contexte du projet pour l'assistant IA Claude Code (règles de travail, état d'avancement, contraintes AWS). Il permet de reprendre le travail sur une autre machine et documente de façon transparente l'usage de l'IA : l'assistant a rédigé le code et la documentation en expliquant chaque choix ; les commits, les push, les fusions et la configuration GitHub ont été faits par l'auteur.
 
@@ -902,6 +913,24 @@ Le job Flake8 analyse aussi désormais le dossier `tests/`.
 Correction d'un test instable (*flaky*) : `test_login_wrong_password_and_unknown_user_same_answer` comparait les deux pages octet par octet et a échoué une fois en CI. Les pages ne différaient que par la valeur du **jeton CSRF**, que Flask-WTF signe avec un horodatage à la seconde : deux connexions servies à des secondes différentes (chacune dure environ 0,5 s à cause d'Argon2id) donnent deux jetons différents. Le test compare désormais les pages sans la valeur du jeton, après avoir vérifié qu'il est bien présent. La cause a été reproduite : avec 1,1 s d'écart, les pages brutes diffèrent, et sont identiques sans le jeton. La propriété testée (aucune différence permettant de savoir si un compte existe) est inchangée.
 
 **Tests du conteneur** : `smoke_test.sh` vérifie en plus le refus de démarrer sans `DATABASE_URL`, puis, dans le conteneur durci, la création d'un compte (`201`), le refus d'un mauvais mot de passe (`401`) et la connexion (`302`), avec les jetons CSRF, puis les en-têtes de sécurité HTTP (dont un en-tête `Server` sans numéro de version).
+
+## Vérifier le projet en direct
+
+Toute modification, même d'une ligne de documentation, suit le même chemin. Pour l'observer :
+
+1. Créer une branche, modifier un fichier, faire un commit signé et pousser la branche.
+2. Ouvrir une pull request : les **13 contrôles obligatoires** démarrent (onglet *Checks* de la PR, environ 3 minutes). La fusion reste impossible tant qu'un seul n'est pas vert.
+3. Fusionner : la pipeline repart sur `main`, puis le job `Deploy (AWS)` attend l'approbation (*Review deployments*).
+4. Après approbation : l'image testée part dans ECR, Terraform met à jour le service, puis `DAST (OWASP ZAP)` analyse le site en ligne. Le lien *View deployment* de l'environnement `production` ouvre l'application.
+
+Vérifications possibles en local, sans compte AWS :
+
+```bash
+pytest tests/unit -v                                   # 32 tests unitaires
+docker build -t password-checker:local .               # image
+bash tests/container/smoke_test.sh password-checker:local  # conteneur durci
+cd infra/platform && terraform init -backend=false && terraform test  # infrastructure, AWS simulé
+```
 
 ## Limites et améliorations
 
