@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 import security
-from models import User, init_db
+from models import User, database_url_from_env, init_db
 
 app = Flask(__name__)
 
@@ -34,13 +34,11 @@ app.config.update(
 csrf = CSRFProtect(app)
 
 # Base de données : adresse fournie par l'environnement, comme la clé
-# secrète (en production, le mot de passe de la base vient d'AWS Secrets
-# Manager). Exemples :
-#   sqlite:////tmp/app.db                       (développement, tests)
-#   postgresql+psycopg://user:mdp@hote:5432/db  (production, AWS RDS)
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("La variable d'environnement DATABASE_URL est requise.")
+# secrète. En développement et en test, DATABASE_URL (par exemple
+# sqlite:////tmp/app.db). Sur AWS, DB_HOST, DB_USER et DB_PASSWORD, ce
+# dernier injecté depuis AWS Secrets Manager (voir models.py). Sans
+# configuration, l'application refuse de démarrer.
+DATABASE_URL = database_url_from_env(os.environ)
 
 Session = init_db(DATABASE_URL)
 

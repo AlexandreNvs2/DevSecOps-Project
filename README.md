@@ -25,7 +25,8 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 - `.dockerignore` : liste blanche des fichiers envoyés au build Docker.
 - `tests/unit/` : tests unitaires (pytest).
 - `tests/container/smoke_test.sh` : tests de fonctionnement et de sécurité du conteneur.
-- `infra/bootstrap/` : stockage de l'état Terraform : script de création des buckets S3 (`create-buckets.sh`), Terraform de leur configuration de sécurité (clé KMS, chiffrement, versioning, journaux d'accès) et ses tests.
+- `infra/bootstrap/` : ressources permanentes : script de création des buckets S3 (`create-buckets.sh`), configuration de sécurité de l'état Terraform (clé KMS, chiffrement, versioning, journaux d'accès), bucket des journaux de l'infrastructure, dépôt d'images ECR, et leurs tests.
+- `infra/platform/` : infrastructure de l'application (VPC, ALB, WAF, ECS Fargate, RDS, Secrets Manager, CloudWatch) et ses tests ; détruite en fin de session.
 - `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
 - `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base, des actions et des fournisseurs Terraform.
 - `CLAUDE.md` : contexte du projet pour l'assistant IA Claude Code (règles de travail, état d'avancement, contraintes AWS). Il permet de reprendre le travail sur une autre machine et documente de façon transparente l'usage de l'IA : l'assistant a rédigé le code et la documentation en expliquant chaque choix ; les commits, les push, les fusions et la configuration GitHub ont été faits par l'auteur.
@@ -363,9 +364,30 @@ L'infrastructure est entièrement décrite en **Terraform** (*Infrastructure as 
 - **Base de données** : **RDS PostgreSQL** chiffré, privé, n'acceptant que les tâches ECS. Mot de passe généré et stocké par AWS dans Secrets Manager (`manage_master_user_password`), jamais connu de Terraform.
 - **Secrets** : **Secrets Manager** pour `SECRET_KEY` et le mot de passe de la base, injectés dans les conteneurs au démarrage (jamais dans l'image ni dans le dépôt).
 - **Images** : **ECR** avec scan à l'envoi et tags immuables (une image publiée ne peut pas être remplacée).
-- **Journaux** : **CloudWatch Logs** pour les conteneurs.
+- **Journaux** : **CloudWatch Logs** pour les conteneurs et le WAF ; bucket S3 pour l'ALB et les flux réseau du VPC.
 
-Le schéma d'architecture complet sera ajouté une fois l'infrastructure déployée.
+```mermaid
+flowchart LR
+    user([Internet]) -->|HTTPS 443<br/>HTTP 80 redirigé| waf[AWS WAF<br/>limite /login<br/>règles gérées]
+    waf --> alb
+    subgraph vpc[VPC 10.0.0.0/16, 2 zones]
+        subgraph pub[Sous-réseaux publics]
+            alb[ALB<br/>TLS 1.2+]
+            nat[NAT Gateway]
+        end
+        subgraph app[Sous-réseaux applicatifs, privés]
+            ecs[ECS Fargate<br/>2 tâches]
+        end
+        subgraph db[Sous-réseaux base, sans route Internet]
+            rds[(RDS PostgreSQL<br/>chiffré, TLS)]
+        end
+    end
+    alb -->|8080| ecs
+    ecs -->|5432| rds
+    ecs -->|443 via NAT| aws[ECR, Secrets Manager,<br/>CloudWatch Logs]
+    kms{{KMS}} -.chiffre.-> rds
+    kms -.chiffre.-> aws
+```
 
 ### Plan de réalisation
 
@@ -374,7 +396,7 @@ Le déploiement est découpé en trois pull requests, chacune analysée par la p
 | Étape | Branche | Contenu | Critère |
 |---|---|---|---|
 | 1 | `feat/terraform-backend` | stockage sécurisé de l'état Terraform, jobs Terraform et Checkov dans la CI | prérequis |
-| 2 | `feat/aws-infra` | réseau, ALB et WAF, ECS Fargate, RDS, Secrets Manager, ECR, CloudWatch | application déployée dans le cloud |
+| 2 | `feat/aws-infra` | réseau, ALB et WAF, ECS Fargate, RDS, Secrets Manager, CloudWatch (`infra/platform`) ; ECR et bucket de journaux (`infra/bootstrap`) ; adaptation de l'application | application déployée dans le cloud |
 | 3 | `ci/deploy` | pipeline de déploiement sur `main` : push de l'image vers ECR, `terraform apply`, puis analyse dynamique (DAST) avec **OWASP ZAP** sur l'URL publique | déploiement sécurisé depuis la CI/CD |
 
 ### Étape 1 : stockage sécurisé de l'état Terraform
@@ -422,6 +444,112 @@ Correction :
 - les deux buckets *tainted* ont été retirés de l'état (`terraform state rm`), sans être supprimés d'AWS ;
 - effet de bord positif : Terraform ne gérant plus les buckets, un `terraform destroy` ne peut pas les supprimer.
 
+### Étape 2 : infrastructure de l'application
+
+L'infrastructure est répartie en deux modules Terraform :
+
+- **`infra/bootstrap`** (permanent) : état Terraform, **dépôt ECR** et **bucket des journaux**. Les images et les journaux survivent ainsi à la destruction quotidienne de l'infrastructure.
+- **`infra/platform`** (détruit en fin de session) : tout le reste. Son état est stocké dans le bucket de l'étape 1 (`backend "s3"`, chiffré par KMS, verrouillé pendant chaque opération).
+
+#### Réseau
+
+| Mesure | Détail | Pourquoi |
+|---|---|---|
+| Trois niveaux de sous-réseaux sur 2 zones | public (ALB, NAT), applicatif (ECS), base (RDS) | une compromission d'un niveau ne donne pas d'accès direct aux autres |
+| Base sans route vers Internet | table de routage des sous-réseaux `db` vide | la base ne peut ni être jointe depuis Internet, ni exfiltrer de données vers Internet |
+| Groupes de sécurité en chaîne | Internet → ALB (443, 80) → ECS (8080) → RDS (5432), chaque règle référence le groupe précédent | moindre privilège réseau : chaque composant n'accepte que son voisin |
+| Groupe de sécurité par défaut fermé | `aws_default_security_group` sans règle | une ressource oubliée sans groupe explicite n'a aucun accès |
+| Aucune adresse publique automatique | `map_public_ip_on_launch = false`, `assign_public_ip = false` | seuls l'ALB et le NAT sont exposés |
+| Journaux de flux du VPC | tout le trafic (accepté et refusé), livré dans le bucket de journaux | détection et investigation d'un trafic anormal |
+| Zones fixées explicitement | `us-east-1a`, `us-east-1b` | l'infrastructure ne change pas si AWS ajoute une zone (Checkov `CKV_AWS_394`) |
+
+#### Entrée : ALB et WAF
+
+| Mesure | Détail | Pourquoi |
+|---|---|---|
+| HTTPS obligatoire | port 80 : redirection `301` vers HTTPS ; politique TLS `ELBSecurityPolicy-TLS13-1-2-2021-06` | aucun échange en clair, TLS 1.2 minimum |
+| Certificat auto-signé | généré par Terraform (ECDSA P-256) pour le nom DNS de l'ALB, importé dans ACM, valable 90 jours | pas de nom de domaine dans le lab ; le navigateur affiche un avertissement |
+| En-têtes invalides supprimés | `drop_invalid_header_fields`, `desync_mitigation_mode = strictest` | protection contre la dissimulation de requêtes (*request smuggling*) |
+| Journaux d'accès de l'ALB | bucket de journaux, préfixe `alb/` | traçabilité de chaque requête |
+| **Limitation de débit sur `/login`** | WAF : au-delà de 100 requêtes en 5 minutes, l'adresse IP est bloquée | freine la force brute et le bourrage d'identifiants, sur toutes les tâches à la fois (un compteur dans l'application ne serait pas partagé) |
+| Règles gérées AWS | réputation IP, OWASP Top 10, entrées malveillantes connues (Log4Shell), injections SQL, attaques Linux, proxys anonymes et Tor | protection contre les attaques web courantes, mises à jour par AWS |
+| Journaux du WAF | CloudWatch, chiffrés KMS, cookies et en-tête `Authorization` masqués | investigation sans exposer les sessions |
+
+Choix : dans la règle des proxys anonymes, les adresses d'hébergeurs cloud (`HostingProviderIPList`) sont seulement **comptées**, pas bloquées : les bloquer couperait l'analyse dynamique OWASP ZAP de l'étape 3, lancée depuis les runners GitHub Actions hébergés sur Azure.
+
+#### Application : ECS Fargate
+
+| Mesure | Détail | Pourquoi |
+|---|---|---|
+| Image désignée par le **SHA du commit** | variable `image_tag` validée (pas de `latest`), tags ECR immuables | l'image déployée est exactement celle testée et analysée en CI |
+| Conteneur durci | système de fichiers en lecture seule, toutes les capacités Linux retirées, utilisateur `10001`, processus init | mêmes garanties que dans les tests du conteneur |
+| Secrets injectés par ECS | `SECRET_KEY` et `DB_PASSWORD` lus dans Secrets Manager au démarrage | aucun secret dans la définition de tâche, l'image ou le dépôt |
+| 2 tâches sur 2 zones | `desired_count = 2` | la perte d'une tâche ou d'une zone n'interrompt pas le service |
+| Annulation automatique | `deployment_circuit_breaker` avec `rollback` | un déploiement défaillant est remplacé par la version précédente |
+| Journaux | CloudWatch Logs chiffrés KMS, conservés 1 an ; *Container Insights* | supervision et investigation |
+
+Adaptations pour le système de fichiers en lecture seule :
+
+- Gunicorn écrit ses fichiers de contrôle des workers dans `/dev/shm` (mémoire), via `GUNICORN_WORKER_TMP_DIR`, défini dans le `Dockerfile` ;
+- le socket de contrôle de Gunicorn 27 (`control_socket_disable = True`) est désactivé. Il tentait de s'ouvrir dans `/home/app`, en lecture seule (`Control server error: [Errno 30] Read-only file system`, visible dans les journaux du conteneur), et c'est une interface d'administration inutile en production.
+
+#### Base de données : RDS PostgreSQL
+
+| Mesure | Détail | Pourquoi |
+|---|---|---|
+| Privée | `publicly_accessible = false`, sous-réseaux sans route Internet, accessible depuis ECS seulement | surface d'attaque minimale |
+| Chiffrée | stockage, sauvegardes et Performance Insights chiffrés par la clé KMS de l'application | données illisibles sans droit sur la clé |
+| **TLS obligatoire** | paramètre `rds.force_ssl = 1` ; l'application se connecte avec `sslmode=require` | aucune donnée en clair sur le réseau |
+| Mot de passe géré par AWS | `manage_master_user_password` : généré par RDS, stocké dans Secrets Manager | Terraform ne le connaît jamais, il n'est donc pas dans l'état |
+| Journalisation sans données sensibles | `log_statement = ddl`, requêtes lentes, connexions | pas de `all` : les paramètres des requêtes (identifiants, empreintes) finiraient dans les journaux |
+| Sauvegardes | 7 jours, mises à jour mineures automatiques | restauration possible, correctifs de sécurité appliqués |
+
+Adaptation de l'application (`models.py`) : sans `DATABASE_URL`, l'adresse est construite à partir de `DB_HOST`, `DB_USER`, `DB_PASSWORD` (et `DB_NAME`, `DB_PORT`) avec `URL.create` de SQLAlchemy, qui échappe les caractères spéciaux du mot de passe généré par RDS et impose `sslmode=require`.
+
+Limite connue : RDS fait tourner automatiquement le mot de passe (tous les 7 jours par défaut). Les conteneurs le lisent au démarrage : après une rotation, il faut relancer les tâches (`aws ecs update-service --force-new-deployment`). Sans conséquence ici, l'infrastructure étant recréée à chaque session ; en production, l'application relirait le secret à la connexion, ou utiliserait l'authentification IAM de RDS (déjà activée).
+
+#### Chiffrement et secrets
+
+- Clé KMS de l'application (`alias/password-checker`), avec rotation annuelle. Sa politique autorise le compte, le déchiffrement par les tâches ECS (`LabRole`) et le chiffrement des journaux par CloudWatch Logs, pour ce compte uniquement.
+- `SECRET_KEY` : 64 caractères aléatoires générés par Terraform (`random_password`), stockés dans Secrets Manager chiffrés par KMS. Elle figure dans l'état Terraform, lui-même chiffré par KMS dans S3.
+
+#### Résultat Checkov et exceptions
+
+Résultat sur `infra/` (bootstrap et platform) : **147 contrôles réussis, 0 échec, 7 exceptions justifiées**.
+
+| Ressource | Contrôle ignoré | Justification | Preuve |
+|---|---|---|---|
+| groupe de sécurité de l'ALB, règle HTTP | `CKV_AWS_260` (port 80 ouvert à Internet) | le port 80 ne fait que rediriger vers HTTPS (`301`), rien n'est transmis à l'application | test `entree_https` |
+| `SECRET_KEY` | `CKV2_AWS_57` (rotation automatique) | la rotation exigerait une fonction Lambda et invaliderait toutes les sessions ; la clé est régénérée à chaque recréation de l'infrastructure | secret chiffré KMS, injecté par référence (test `conteneurs_durcis`) |
+| RDS | `CKV_AWS_157` (Multi-AZ) | budget du lab ; en production, instance de secours dans une autre zone | sauvegardes de 7 jours (test `base_de_donnees`) |
+| RDS | `CKV_AWS_118` (supervision avancée) | exige un rôle approuvé par `monitoring.rds.amazonaws.com`, que `LabRole` n'accepte pas et qu'il est interdit de créer | Performance Insights et journaux PostgreSQL actifs (test `base_de_donnees`) |
+| RDS | `CKV_AWS_293` (protection contre la suppression) | infrastructure détruite en fin de session (budget) ; activée en production | — (choix de coût assumé) |
+| ALB | `CKV_AWS_150` (protection contre la suppression) | même raison ; l'ALB ne contient aucune donnée et Terraform le recrée à l'identique | — (choix de coût assumé) |
+| définition de tâche ECS | `CKV_AWS_249` (rôles d'exécution et de tâche distincts) | le lab impose `LabRole` pour les deux et interdit d'en créer d'autres ; en production, deux rôles limités au strict nécessaire | — (contrainte du lab, voir le tableau des contraintes) |
+
+Les tests de `infra/platform/tests/platform.tftest.hcl` (6 scénarios) vérifient aussi le cloisonnement réseau, l'absence de secret en clair dans la définition de tâche, le WAF et le refus d'un tag d'image autre qu'un SHA.
+
+#### Déployer et détruire (manuellement, avant l'étape 3)
+
+Prérequis : identifiants du lab chargés, `infra/bootstrap` appliqué (il crée le dépôt ECR et le bucket de journaux).
+
+```bash
+# 1. Image : construite pour l'architecture de Fargate (x86_64) et envoyée dans ECR
+REPO=$(terraform -chdir=infra/bootstrap output -raw ecr_repository_url)
+TAG=$(git rev-parse HEAD)
+aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
+docker build --platform linux/amd64 -t "$REPO:$TAG" .
+docker push "$REPO:$TAG"
+
+# 2. Infrastructure
+cd infra/platform
+terraform init -backend-config="bucket=$(terraform -chdir=../bootstrap output -raw state_bucket)"
+terraform apply -var "image_tag=$TAG"
+
+# 3. En fin de session (budget)
+terraform destroy -var "image_tag=$TAG"
+```
+
 ### Sécurité de l'Infrastructure as Code dans la CI
 
 Deux jobs analysent le dossier `infra/` à chaque pull request, sans aucun identifiant AWS :
@@ -433,7 +561,7 @@ Deux jobs analysent le dossier `infra/` à chaque pull request, sans aucun ident
 
 Les fournisseurs Terraform sont figés par version et par **empreinte** dans `.terraform.lock.hcl` (versionné, vérifié avec `-lockfile=readonly`) : un fournisseur modifié sur le registre serait refusé. Dependabot propose leurs mises à jour.
 
-Résultat Checkov sur le module `bootstrap` : **21 contrôles réussis, 0 échec, 0 exception**.
+Résultat Checkov sur le module `bootstrap` à l'étape 1 : **21 contrôles réussis, 0 échec, 0 exception** (résultat global de l'étape 2 ci-dessus).
 
 Limite assumée : la plupart des contrôles S3 de Checkov s'appliquent à la ressource `aws_s3_bucket`, absente depuis la correction ci-dessus. La première version, qui l'utilisait, obtenait 36 contrôles réussis et 6 exceptions justifiées (réplication inter-régions impossible sans rôle IAM, pas de consommateur de notifications, bucket de journaux qui ne peut pas se journaliser lui-même ni être chiffré en KMS). Les garanties que Checkov vérifiait sur le bucket sont désormais **prouvées par les tests** de `infra/bootstrap/tests/bootstrap.tftest.hcl` :
 
@@ -498,12 +626,12 @@ La fonctionnalité d'origine de l'application (vérifier un mot de passe dans le
 | CSRF | tous les formulaires (inscription, connexion, déconnexion) portent un jeton CSRF ; la déconnexion se fait en `POST` |
 | Cookie de session | `Secure`, `HttpOnly`, `SameSite=Lax` (voir le point 8 de l'audit du code) |
 
-La limitation du nombre de tentatives (force brute) sera assurée au niveau de l'infrastructure, par une règle de limitation de débit du **WAF AWS** placé devant le load balancer : un compteur en mémoire dans l'application ne serait pas partagé entre les workers et les conteneurs.
+La limitation du nombre de tentatives (force brute) est assurée au niveau de l'infrastructure, par une règle de limitation de débit du **WAF AWS** placé devant le load balancer (voir l'étape 2 du déploiement) : un compteur en mémoire dans l'application ne serait pas partagé entre les workers et les conteneurs.
 
 ### Base de données
 
 - Accès par **SQLAlchemy** (`2.1.8`) : toutes les requêtes sont **paramétrées** par l'ORM, aucune concaténation de chaînes dans du SQL, donc pas d'injection SQL.
-- Adresse de la base fournie par la variable d'environnement **`DATABASE_URL`**, obligatoire comme `SECRET_KEY` (l'application refuse de démarrer sans elle). Aucun mot de passe de base de données dans le code.
+- Adresse de la base fournie par l'environnement : **`DATABASE_URL`** (développement, tests), ou **`DB_HOST`, `DB_USER`, `DB_PASSWORD`** sur AWS, le mot de passe venant de Secrets Manager. Sans l'une de ces configurations, l'application refuse de démarrer. Aucun mot de passe de base de données dans le code.
 - **SQLite** en développement, dans les tests unitaires et dans les tests du conteneur ; **PostgreSQL** (AWS RDS, chiffré) en production, via le pilote `psycopg` (`3.3.8`). Le même code fonctionne avec les deux.
 - Gunicorn charge l'application une seule fois avant de créer ses workers (`preload_app`) : les tables ne sont créées qu'une fois, et le pool de connexions est vidé avant la création des workers pour qu'aucune connexion ne soit partagée entre eux.
 
@@ -530,6 +658,7 @@ SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") DATABASE_
 | `test_logout_clears_session` | déconnexion |
 | `test_login_rehashes_outdated_hash` | une empreinte aux anciens paramètres est recalculée à la connexion |
 | `test_password_check_*` | la fonctionnalité d'origine (listes SecLists, validation des entrées) |
+| `test_database_url.py` (8 tests) | construction de l'adresse de la base sur AWS : priorité à `DATABASE_URL`, caractères spéciaux du mot de passe échappés, `sslmode=require`, mot de passe masqué à l'affichage, refus de démarrer sans configuration |
 
 Le job Flake8 analyse aussi désormais le dossier `tests/`.
 

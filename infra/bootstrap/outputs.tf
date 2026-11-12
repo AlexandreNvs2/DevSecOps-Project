@@ -11,3 +11,13 @@ output "state_kms_key_arn" {
 output "region" {
   value = var.region
 }
+
+output "ecr_repository_url" {
+  description = "Adresse du dépôt ECR de l'image de l'application."
+  value       = aws_ecr_repository.app.repository_url
+}
+
+output "app_logs_bucket" {
+  description = "Bucket des journaux de l'ALB et du VPC."
+  value       = local.app_logs_name
+}

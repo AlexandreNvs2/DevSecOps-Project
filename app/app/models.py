@@ -5,7 +5,7 @@ concaténation de chaînes dans du SQL, pas d'injection SQL possible.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, String, create_engine
+from sqlalchemy import URL, DateTime, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -34,3 +34,34 @@ def init_db(database_url):
     # on vide le pool pour qu'aucune connexion ne soit partagée entre eux.
     engine.dispose()
     return sessionmaker(bind=engine, expire_on_commit=False)
+
+
+def database_url_from_env(environ):
+    """Adresse de la base à partir des variables d'environnement.
+
+    - DATABASE_URL, si elle est définie (développement, tests) ;
+    - sinon DB_HOST, DB_USER, DB_PASSWORD (et DB_NAME, DB_PORT) : sur AWS,
+      le mot de passe est généré et stocké par RDS dans Secrets Manager,
+      puis injecté seul par ECS. L'adresse est construite avec URL.create,
+      qui échappe les caractères spéciaux du mot de passe, et impose le
+      chiffrement de la connexion (sslmode=require).
+    """
+    url = environ.get("DATABASE_URL")
+    if url:
+        return url
+    required = ("DB_HOST", "DB_USER", "DB_PASSWORD")
+    missing = [name for name in required if not environ.get(name)]
+    if missing:
+        raise RuntimeError(
+            "Base de données non configurée : définir DATABASE_URL, "
+            "ou DB_HOST, DB_USER et DB_PASSWORD."
+        )
+    return URL.create(
+        "postgresql+psycopg",
+        username=environ["DB_USER"],
+        password=environ["DB_PASSWORD"],
+        host=environ["DB_HOST"],
+        port=int(environ.get("DB_PORT", "5432")),
+        database=environ.get("DB_NAME", "app"),
+        query={"sslmode": "require"},
+    )
