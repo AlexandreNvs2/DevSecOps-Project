@@ -12,7 +12,7 @@ EXPECTED = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Embedder-Policy": "require-corp",
     "Cross-Origin-Resource-Policy": "same-origin",
-    "Cache-Control": "no-store",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
 }
 
 
@@ -28,7 +28,7 @@ def test_security_headers_on_errors(client):
     response = client.get("/page-inexistante")
     assert response.status_code == 404
     assert response.headers.get("X-Content-Type-Options") == "nosniff"
-    assert response.headers.get("Cache-Control") == "no-store"
+    assert response.headers.get("Cache-Control") == EXPECTED["Cache-Control"]
 
 
 def test_csp_blocks_everything_not_needed(client):

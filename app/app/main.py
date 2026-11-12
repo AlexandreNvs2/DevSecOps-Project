@@ -59,8 +59,9 @@ SECURITY_HEADERS = {
     "Cross-Origin-Embedder-Policy": "require-corp",
     "Cross-Origin-Resource-Policy": "same-origin",
     # Pages personnelles (identifiant, jeton CSRF) : jamais mises en cache,
-    # ni par le navigateur ni par un proxy.
-    "Cache-Control": "no-store",
+    # ni par le navigateur ni par un proxy (directives recommandées par
+    # l'OWASP pour du contenu sensible servi en HTTPS, ZAP 10015).
+    "Cache-Control": "no-store, no-cache, must-revalidate",
 }
 
 
