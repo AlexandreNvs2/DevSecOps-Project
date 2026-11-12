@@ -118,4 +118,19 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIES" -c "$COOKIES" -X PO
 [ "$code" = "302" ] || fail "connexion : code $code au lieu de 302"
 ok "connexion réussie (302)"
 
+# 9. En-têtes HTTP (alertes OWASP ZAP, voir .zap/rules.tsv).
+headers="$(curl -sI "$URL/")"
+# 10036 ignorée : l'en-tête Server ne révèle aucun numéro de version.
+server="$(printf '%s' "$headers" | grep -i '^server:' | tr -d '\r')"
+printf '%s' "$server" | grep -q '[0-9]' && fail "version divulguée : $server"
+ok "en-tête Server sans numéro de version ($server)"
+# 10049 ignorée : les pages ne sont jamais mises en cache.
+printf '%s' "$headers" | grep -qi '^cache-control: no-store' || fail "Cache-Control: no-store absent"
+ok "pages jamais mises en cache (Cache-Control: no-store)"
+for h in content-security-policy strict-transport-security x-frame-options \
+         x-content-type-options permissions-policy cross-origin-embedder-policy; do
+  printf '%s' "$headers" | grep -qi "^$h:" || fail "en-tête $h absent"
+done
+ok "en-têtes de sécurité présents (CSP, HSTS, X-Frame-Options...)"
+
 echo "Tous les tests du conteneur sont passés."

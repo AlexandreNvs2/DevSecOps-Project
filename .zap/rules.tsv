@@ -1,0 +1,4 @@
+10036	IGNORE	(En-tête Server : il vaut « gunicorn », sans numéro de version, et Gunicorn ne permet pas de le retirer. Aucune version divulguée, vérifié par tests/container/smoke_test.sh.)
+10049	IGNORE	(Contenu non stockable : alerte informative, c'est l'effet voulu de Cache-Control: no-store sur des pages personnelles. Vérifié par tests/unit/test_security_headers.py et tests/container/smoke_test.sh.)
+10111	IGNORE	(Requête d'authentification identifiée : alerte informative, ZAP signale qu'il a trouvé le formulaire de connexion. La force brute est limitée par le WAF, test « pare_feu_applicatif » de infra/platform.)
+10112	IGNORE	(Gestion de session identifiée : alerte informative, ZAP signale le cookie de session. Ses attributs HttpOnly, SameSite=Lax et Secure sont vérifiés par tests/unit/test_security_headers.py.)

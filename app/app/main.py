@@ -33,6 +33,43 @@ app.config.update(
 # Protection CSRF sur toutes les requêtes POST.
 csrf = CSRFProtect(app)
 
+# En-têtes de sécurité HTTP ajoutés à chaque réponse (alertes de l'analyse
+# dynamique OWASP ZAP sur l'application déployée, voir le README).
+SECURITY_HEADERS = {
+    # Navigateur obligé d'utiliser HTTPS pendant un an (ignoré en HTTP).
+    "Strict-Transport-Security": "max-age=31536000",
+    # Aucune ressource externe, aucun script, aucun style en ligne ; pages
+    # non intégrables dans un cadre (clickjacking) ; formulaires envoyés
+    # uniquement à l'application.
+    "Content-Security-Policy": (
+        "default-src 'none'; form-action 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'"
+    ),
+    "X-Frame-Options": "DENY",
+    # Pas d'interprétation d'un fichier dans un autre type que celui déclaré.
+    "X-Content-Type-Options": "nosniff",
+    # Aucune adresse transmise aux sites tiers.
+    "Referrer-Policy": "no-referrer",
+    # Aucune API sensible du navigateur (caméra, micro, position...).
+    "Permissions-Policy": (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    ),
+    # Isolation de la page vis-à-vis des autres origines.
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Embedder-Policy": "require-corp",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    # Pages personnelles (identifiant, jeton CSRF) : jamais mises en cache,
+    # ni par le navigateur ni par un proxy.
+    "Cache-Control": "no-store",
+}
+
+
+@app.after_request
+def set_security_headers(response):
+    response.headers.update(SECURITY_HEADERS)
+    return response
+
+
 # Base de données : adresse fournie par l'environnement, comme la clé
 # secrète. En développement et en test, DATABASE_URL (par exemple
 # sqlite:////tmp/app.db). Sur AWS, DB_HOST, DB_USER et DB_PASSWORD, ce
