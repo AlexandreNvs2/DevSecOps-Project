@@ -8,12 +8,12 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 
 | Critère | Points | État |
 |---|---|---|
-| Application déployée dans le Cloud, accessible depuis Internet | 5 | à faire (AWS) |
+| Application déployée dans le Cloud, accessible depuis Internet | 5 | fait (PR #10 à #13, AWS) |
 | Sécurisation du code source | 10 | fait (PR #2) |
 | Image Docker construite et sécurisée dans la CI | 10 | fait (PR #4) |
-| Déploiement sécurisé depuis une pipeline CI/CD | 10 | à faire (AWS) |
+| Déploiement sécurisé depuis une pipeline CI/CD | 10 | fait (PR #14, #15 : approbation, ECR, Terraform, DAST ZAP) |
 | Stockage sécurisé des mots de passe | 10 | fait (PR #6) |
-| README : architecture (schéma), cycle de vie sécurisé, justifications | 10 | tenu à jour à chaque étape ; schéma d'architecture à faire |
+| README : architecture (schéma), cycle de vie sécurisé, justifications | 10 | fait (`docs/readme-final` : synthèse des critères, schémas, incidents, limites) |
 | Versioning et collaboration, maîtrise des accès | 5 | fait (signature, ruleset, checks obligatoires) |
 
 Énoncé et activités du cours : https://ready-player-school.notion.site/272f3a8bf3b68212863b0175bfcb4a52 (pages publiques Notion, à lire avec un navigateur).
@@ -29,7 +29,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 
 - GitHub : https://github.com/AlexandreNvs2/DevSecOps-Project, CI/CD avec **GitHub Actions** (le cours utilisait GitLab ; choix assumé et documenté).
 - Ruleset `protect-main` sur `main`, sans aucune exception : PR obligatoire (0 approbation, projet réalisé seul), **commits signés** (SSH ed25519), pas de force push ni de suppression, discussions résolues, fusion par merge ou squash (pas de rebase), branche à jour et **checks obligatoires**.
-- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)` (10 checks, vérifié le 12 novembre 2026). **À ajouter** après fusion de `feat/terraform-backend` : `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)`.
+- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)` (10 checks, vérifié le 12 novembre 2026). **Manquent** (le README les annonce) : `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)`, à ajouter dans le ruleset.
 - Dependabot actif (pip, image Docker, actions GitHub).
 
 ## Architecture actuelle
@@ -70,16 +70,14 @@ Conséquences : utiliser `LabRole` comme rôle d'exécution et de tâche ECS ; p
 
 ## Prochaines étapes
 
-1. **Déploiement AWS** (critères 1 et 4), en Terraform, scanné par Checkov, en 3 PR (plan détaillé dans le README) : `feat/terraform-backend` (PR #10) et `fix/bootstrap-s3-scp` (PR #11) fusionnées et appliquées ; `feat/aws-infra` (code prêt, à appliquer : bootstrap puis push manuel de l'image amd64 puis platform, commandes dans le README) ; `ci/deploy` (PR #14, fusionnée : premier déploiement par la pipeline réussi) puis `fix/dast-waf` (User-Agent de ZAP, `Cache-Control` complet). Environnement GitHub `production` en place (reviewer requis, branche main, 3 secrets AWS à renouveler à chaque session, variable `TF_STATE_BUCKET`). Choix validés : un seul NAT (budget), mot de passe RDS géré par AWS (`manage_master_user_password`, l'app construira l'URL depuis `DB_HOST`/`DB_USER`/`DB_PASSWORD` si `DATABASE_URL` absente), `SECRET_KEY` générée par Terraform dans Secrets Manager, `terraform destroy` en fin de session.
-   - VPC sur 2 zones, sous-réseaux publics (ALB) et privés (ECS, RDS), NAT ;
-   - ALB en HTTPS (certificat auto-signé importé dans ACM), WAF avec règle de limitation de débit sur `/login` ;
-   - ECS Fargate, 2 tâches sur 2 zones, security group n'acceptant que l'ALB ;
-   - RDS PostgreSQL chiffré, privé, n'acceptant que ECS ;
-   - Secrets Manager pour `SECRET_KEY` et le mot de passe de la base ;
-   - ECR (scan à l'envoi, tags immuables), CloudWatch Logs ;
-   - pipeline de déploiement sur `main` (push de l'image vers ECR, `terraform apply`), puis DAST avec OWASP ZAP sur l'URL publique.
-2. README final : schéma d'architecture (Mermaid), workflow du cycle de vie sécurisé, relecture.
-3. Optionnel : job TruffleHog (recherche de secrets) dans la pipeline, vu dans l'activité 7 du cours.
+1. Ajouter `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)` aux checks obligatoires du ruleset (le README en annonce 12).
+2. Job TruffleHog (recherche de secrets dans l'historique Git) dans la pipeline, vu dans l'activité 7 du cours, sur une branche dédiée ; à rendre obligatoire et à documenter dans le README (tableaux des jobs et du cycle de vie).
+
+## Reprendre une session sur le lab AWS
+
+1. « Start Lab », recoller les identifiants dans `~/.aws/credentials`, puis les envoyer dans l'environnement GitHub : `aws configure get aws_access_key_id | gh secret set AWS_ACCESS_KEY_ID --env production` (idem `aws_secret_access_key`, `aws_session_token`).
+2. L'infrastructure `infra/platform` est recréée par la pipeline au prochain push sur `main` (approbation requise), ou à la main (commandes dans le README, section « Déployer et détruire manuellement »).
+3. En fin de session : `terraform destroy -var "image_tag=$TAG"` depuis `infra/platform`, avec `TAG` = tag de l'image en service (`aws ecs describe-task-definition --task-definition password-checker`).
 
 ## Poste de travail
 
