@@ -260,6 +260,30 @@ run "pare_feu_applicatif" {
   }
 }
 
+# Régression : AWS refuse à l'exécution (et non au plan) les descriptions de
+# groupes de sécurité contenant une apostrophe ou un accent.
+run "descriptions_aws" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      for d in concat(
+        [aws_security_group.alb.description, aws_security_group.app.description, aws_security_group.db.description],
+        [
+          aws_vpc_security_group_ingress_rule.alb_https.description,
+          aws_vpc_security_group_ingress_rule.alb_http.description,
+          aws_vpc_security_group_egress_rule.alb_to_app.description,
+          aws_vpc_security_group_ingress_rule.app_from_alb.description,
+          aws_vpc_security_group_egress_rule.app_https.description,
+          aws_vpc_security_group_egress_rule.app_to_db.description,
+          aws_vpc_security_group_ingress_rule.db_from_app.description,
+        ],
+      ) : can(regex("^[a-zA-Z0-9. _:/()#,@\\[\\]+=&;{}!$*-]{1,255}$", d))
+    ])
+    error_message = "Description de groupe de sécurité refusée par AWS (caractères autorisés : a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*)."
+  }
+}
+
 run "tag_image_invalide" {
   command = plan
 

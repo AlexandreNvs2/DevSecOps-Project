@@ -1,4 +1,7 @@
 # Groupes de sécurité : chaque niveau n'accepte que le niveau précédent.
+#
+# Descriptions sans accent ni apostrophe : AWS n'accepte que les caractères
+# a-zA-Z0-9. _-:/()#,@[]+=&;{}!$* (vérifié par le test « descriptions_aws »).
 #   Internet --443/80--> ALB --8080--> ECS --5432--> RDS
 
 resource "aws_security_group" "alb" {
@@ -37,13 +40,13 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_app" {
 
 resource "aws_security_group" "app" {
   name        = "${var.name}-app"
-  description = "Taches ECS : trafic depuis l'ALB uniquement"
+  description = "Taches ECS : trafic depuis le load balancer uniquement"
   vpc_id      = aws_vpc.main.id
 }
 
 resource "aws_vpc_security_group_ingress_rule" "app_from_alb" {
   security_group_id            = aws_security_group.app.id
-  description                  = "Depuis l'ALB uniquement"
+  description                  = "Depuis le load balancer uniquement"
   referenced_security_group_id = aws_security_group.alb.id
   ip_protocol                  = "tcp"
   from_port                    = local.container_port
