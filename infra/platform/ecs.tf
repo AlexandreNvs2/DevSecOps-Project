@@ -36,10 +36,16 @@ resource "aws_ecs_task_definition" "app" {
     image     = local.image
     essential = true
 
+    # Valeurs par défaut d'AWS écrites explicitement (hostPort, listes
+    # vides) : sinon chaque plan recréerait la définition de tâche.
     portMappings = [{
       containerPort = local.container_port
+      hostPort      = local.container_port
       protocol      = "tcp"
     }]
+    mountPoints    = []
+    volumesFrom    = []
+    systemControls = []
 
     # Durcissement, comme dans les tests du conteneur : système de fichiers
     # en lecture seule, aucune capacité Linux, utilisateur non root
@@ -47,7 +53,7 @@ resource "aws_ecs_task_definition" "app" {
     readonlyRootFilesystem = true
     user                   = "10001:10001"
     linuxParameters = {
-      capabilities       = { drop = ["ALL"] }
+      capabilities       = { add = [], drop = ["ALL"] }
       initProcessEnabled = true
     }
 

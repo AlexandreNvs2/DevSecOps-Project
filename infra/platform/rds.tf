@@ -13,10 +13,13 @@ resource "aws_db_parameter_group" "main" {
   name   = var.name
   family = "postgres18"
 
-  # Refus de toute connexion non chiffrée.
+  # Refus de toute connexion non chiffrée. Paramètre statique : AWS le
+  # marque « pending-reboot » (sans cette précision, chaque plan afficherait
+  # une modification).
   parameter {
-    name  = "rds.force_ssl"
-    value = "1"
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "pending-reboot"
   }
 
   # Journalisation des changements de schéma et des requêtes lentes. Pas de
