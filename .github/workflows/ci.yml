@@ -327,13 +327,36 @@ jobs:
       # Scan passif (baseline) de l'application en ligne : en-têtes, cookies,
       # divulgation d'informations... Tout avertissement fait échouer le job,
       # sauf les règles ignorées avec justification dans .zap/rules.tsv.
+      #
+      # Le robot de ZAP envoie des requêtes sans User-Agent, que le WAF bloque
+      # (règle AWS NoUserAgent_HEADER) : ZAP analyserait alors la page 403 du
+      # WAF au lieu de l'application. Une règle « Replacer » de ZAP ajoute un
+      # User-Agent identifiable à toutes ses requêtes ; le WAF reste inchangé.
       - name: Analyse dynamique de l'application déployée
         env:
           URL: ${{ needs.deploy.outputs.url }}
+          UA: DevSecOps-Project-DAST/1.0
         run: |
+          # Garde-fou 1 : le WAF laisse passer le scanner identifié.
+          code="$(curl -sk -A "$UA" -o /dev/null -w '%{http_code}' "$URL/login")"
+          [ "$code" = "200" ] || { echo "::error::le WAF bloque le scanner (code $code)"; exit 1; }
+
           mkdir -p zap && cp .zap/rules.tsv zap/ && chmod -R a+rwx zap
+          r="replacer.full_list(0)"
+          set +e
           docker run --rm -v "$PWD/zap:/zap/wrk:rw" zaproxy/zap-stable:2.17.0 \
-            zap-baseline.py -t "$URL" -c rules.tsv -r rapport-zap.html -J rapport-zap.json
+            zap-baseline.py -t "$URL" -c rules.tsv -r rapport-zap.html -J rapport-zap.json \
+            -z "-config $r.description=ua -config $r.enabled=true -config $r.matchtype=REQ_HEADER -config $r.matchstr=User-Agent -config $r.regex=false -config $r.replacement=$UA" \
+            | tee zap/sortie.txt
+          status="${PIPESTATUS[0]}"
+          set -e
+
+          # Garde-fou 2 : aucune page analysée n'est une page de blocage du WAF.
+          if grep -q "(403 Forbidden)" zap/sortie.txt; then
+            echo "::error::ZAP a analysé des pages bloquées par le WAF (403) au lieu de l'application"
+            exit 1
+          fi
+          exit "$status"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
