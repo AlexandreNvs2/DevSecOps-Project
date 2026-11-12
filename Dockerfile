@@ -3,7 +3,7 @@
 # Image de base figée par version ET par empreinte (digest) : on sait
 # exactement ce qu'on construit, et une image modifiée sur le registre
 # serait refusée. Dependabot proposera les mises à jour.
-FROM python:3.13.18-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS base
+FROM python:3.15.0-slim-trixie@sha256:f5b92f2a669a4c347044f29367f31983280b648250ca94dea66f98c53bc87e58 AS base
 
 
 # ---- Étape 1 : installation des dépendances --------------------------------
@@ -29,12 +29,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     GUNICORN_BIND=0.0.0.0:8080
 
-# 1. Correctif de sécurité Debian : zlib1g corrigé (CVE-2026-85091,
-#    CVE-2026-76844, signalées HIGH par Trivy), publié après l'image de base.
-#    Version figée ; à retirer quand Dependabot fournira une image de base
-#    qui l'inclut. Si l'image de base contient un jour une version plus
-#    récente, apt refusera de rétrograder et le build échouera : c'est le
-#    signal pour supprimer cette ligne.
+# 1. Correctifs de sécurité Debian publiés après l'image de base, signalés
+#    HIGH par Trivy :
+#    - zlib1g (CVE-2026-85091, CVE-2026-76844) ;
+#    - apt et libapt-pkg7.0 3.0.4 (CVE-2026-109518, exécution de code à
+#      distance pendant le téléchargement des paquets).
+#    Versions figées ; chaque ligne est à retirer quand Dependabot fournira
+#    une image de base qui l'inclut. Si l'image de base contient un jour une
+#    version plus récente, apt refusera de rétrograder et le build échouera :
+#    c'est le signal pour supprimer la ligne concernée.
 # 2. pip est retiré de l'image finale : rien ne peut y être installé une fois
 #    en production.
 # 3. Bits setuid/setgid retirés (su, passwd, mount...) : aucun binaire de
@@ -43,6 +46,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends --only-upgrade \
        zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+       apt=3.0.4 \
+       libapt-pkg7.0=3.0.4 \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip uninstall --yes pip \
     && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
