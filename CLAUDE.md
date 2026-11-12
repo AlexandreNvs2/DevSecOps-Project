@@ -29,7 +29,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 
 - GitHub : https://github.com/AlexandreNvs2/DevSecOps-Project, CI/CD avec **GitHub Actions** (le cours utilisait GitLab ; choix assumé et documenté).
 - Ruleset `protect-main` sur `main`, sans aucune exception : PR obligatoire (0 approbation, projet réalisé seul), **commits signés** (SSH ed25519), pas de force push ni de suppression, discussions résolues, fusion par merge ou squash (pas de rebase), branche à jour et **checks obligatoires**.
-- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)` (10 checks, vérifié le 12 novembre 2026). **Manquent** (le README les annonce) : `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)`, à ajouter dans le ruleset.
+- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)`, `IaC Terraform (fmt, validate, test)`, `IaC (Checkov)` (12 checks, vérifié le 12 novembre 2026). `Deploy (AWS)` et `DAST (OWASP ZAP)` ne sont pas obligatoires : ils ne tournent qu'après la fusion, sur `main`.
 - Dependabot actif (pip, image Docker, actions GitHub).
 
 ## Architecture actuelle
@@ -40,7 +40,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 - Variables d'environnement **obligatoires** : `SECRET_KEY`, et `DATABASE_URL` ou `DB_HOST`/`DB_USER`/`DB_PASSWORD` (+ `DB_NAME`, `DB_PORT`, URL construite avec `sslmode=require`, voir `models.database_url_from_env`). `SESSION_COOKIE_SECURE=false` seulement en local (HTTP).
 - `app/app/gunicorn.conf.py` : Gunicorn, écoute sur `127.0.0.1` par défaut, `0.0.0.0` uniquement dans l'image via `GUNICORN_BIND`, `preload_app`.
 - `Dockerfile` : multi-étapes, `python:3.15.0-slim-trixie` figé par digest, utilisateur 10001 non root, pip retiré, setuid retirés, `zlib1g`, `apt` et `libapt-pkg7.0` corrigés figés, `HEALTHCHECK`.
-- `.github/workflows/ci.yml` : 14 jobs (dont `Deploy (AWS)` et `DAST (OWASP ZAP)` sur main seulement, environnement GitHub `production` avec approbation, secrets AWS du lab et variable `TF_STATE_BUCKET`), actions figées par SHA, outils figés par version, `persist-credentials: false`, `concurrency`.
+- `.github/workflows/ci.yml` : 15 jobs (dont `Secrets (TruffleHog)`, historique complet avec `fetch-depth: 0`) (dont `Deploy (AWS)` et `DAST (OWASP ZAP)` sur main seulement, environnement GitHub `production` avec approbation, secrets AWS du lab et variable `TF_STATE_BUCKET`), actions figées par SHA, outils figés par version, `persist-credentials: false`, `concurrency`.
 - `main.py` : en-têtes de sécurité HTTP (`SECURITY_HEADERS`, CSP `default-src 'none'` : aucun style ni script en ligne dans les templates). `.zap/rules.tsv` : 4 alertes ZAP ignorées et justifiées. Le job DAST force un `User-Agent` sur toutes les requêtes de ZAP (règle Replacer) : sans lui, le WAF (`NoUserAgent_HEADER`) bloque le robot et ZAP analyse des pages 403 ; deux garde-fous (`/login` en 200 avant, aucun `403 Forbidden` après).
 - Tests : `tests/unit/` (pytest, 32 tests) et `tests/container/smoke_test.sh` (conteneur lancé en lecture seule, sans capacités).
 - `infra/bootstrap/` (permanent) : 3 buckets S3 créés par `create-buckets.sh` (état, journaux d'accès à l'état, journaux ALB/VPC `devsecops-logs-<compte>`), leur configuration de sécurité, dépôt ECR `password-checker` (tags immuables, scan) ; état local non versionné.
@@ -70,8 +70,7 @@ Conséquences : utiliser `LabRole` comme rôle d'exécution et de tâche ECS ; p
 
 ## Prochaines étapes
 
-1. Ajouter `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)` aux checks obligatoires du ruleset (le README en annonce 12).
-2. Job TruffleHog (recherche de secrets dans l'historique Git) dans la pipeline, vu dans l'activité 7 du cours, sur une branche dédiée ; à rendre obligatoire et à documenter dans le README (tableaux des jobs et du cycle de vie).
+1. Après fusion de `ci/trufflehog` : ajouter `Secrets (TruffleHog)` aux checks obligatoires du ruleset (13 checks), et remplacer « PR de TruffleHog » par son numéro dans le README.
 
 ## Reprendre une session sur le lab AWS
 

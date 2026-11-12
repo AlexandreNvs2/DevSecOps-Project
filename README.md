@@ -2,7 +2,7 @@
 
 Challenge final DevSecOps : intégrer et déployer de manière sécurisée une application Python (Flask) dans une pipeline CI/CD, en appliquant les principes DevSecOps.
 
-L'application est déployée sur AWS (ECS Fargate derrière un load balancer et un pare-feu applicatif, base PostgreSQL chiffrée) par une pipeline GitHub Actions qui la bloque au moindre problème de sécurité : 12 contrôles obligatoires avant toute fusion, approbation manuelle avant tout déploiement, puis analyse dynamique de la version en ligne.
+L'application est déployée sur AWS (ECS Fargate derrière un load balancer et un pare-feu applicatif, base PostgreSQL chiffrée) par une pipeline GitHub Actions qui la bloque au moindre problème de sécurité : 13 contrôles obligatoires avant toute fusion, approbation manuelle avant tout déploiement, puis analyse dynamique de la version en ligne.
 
 ## Sommaire
 
@@ -21,7 +21,7 @@ L'application est déployée sur AWS (ECS Fargate derrière un load balancer et 
 | Critère | Mise en œuvre | Preuve | Détails |
 |---|---|---|---|
 | Application déployée dans le cloud, accessible depuis Internet | AWS : ALB en HTTPS (TLS 1.3), WAF, ECS Fargate sur 2 zones, RDS PostgreSQL ; tout en Terraform | site en `200` en HTTPS, HTTP redirigé en `301`, 2 tâches saines ; vérifié par le job `Deploy (AWS)` à chaque déploiement | [Déploiement](#déploiement-sécurisé-sur-aws) |
-| Sécurisation du code source | Flake8, Bandit, Semgrep, pip-audit en CI ; relecture manuelle ; 11 problèmes corrigés ; en-têtes HTTP de sécurité | 0 alerte sur les 4 outils ; 32 tests unitaires | [Code source](#sécurisation-du-code-source) |
+| Sécurisation du code source | Flake8, Bandit, Semgrep, pip-audit, TruffleHog en CI ; relecture manuelle ; 11 problèmes corrigés ; en-têtes HTTP de sécurité | 0 alerte sur les 5 outils, 0 secret dans les 72 commits de l'historique ; 32 tests unitaires | [Code source](#sécurisation-du-code-source) |
 | Image Docker construite et sécurisée dans la CI | image multi-étapes, base figée par digest, non root, sans pip ni setuid ; Hadolint, Trivy, Dockle | 0 vulnérabilité HIGH/CRITICAL corrigeable ; conteneur testé en lecture seule et sans capacités | [Image Docker](#image-docker-et-pipeline-ci) |
 | Déploiement sécurisé depuis une pipeline CI/CD | environnement `production` avec approbation, secrets limités à cet environnement, image testée réutilisée (pas reconstruite), `terraform plan` puis `apply`, Checkov, DAST OWASP ZAP | ZAP : 7 URL, 0 échec, 0 avertissement ; Checkov : 147 contrôles réussis, 0 échec | [Étape 3](#étape-3--déploiement-continu-depuis-la-pipeline) |
 | Stockage sécurisé des mots de passe | Argon2id (RFC 9106), sel unique, politique NIST SP 800-63B, anti-énumération ; secrets applicatifs dans AWS Secrets Manager, état Terraform chiffré par KMS | tests unitaires (empreinte, sel, rehachage, temps constant) | [Mots de passe](#stockage-sécurisé-des-mots-de-passe) |
@@ -65,10 +65,11 @@ flowchart TB
         dev["Branche dédiée"] --> commit["Commit signé (SSH ed25519)"]
         commit --> pr["Pull request vers main"]
     end
-    subgraph ci["2. Intégration continue : 12 contrôles obligatoires"]
+    subgraph ci["2. Intégration continue : 13 contrôles obligatoires"]
         lint["Flake8"]
         sast["SAST : Bandit, Semgrep"]
         sca["SCA : pip-audit"]
+        secrets["Secrets : TruffleHog, tout l'historique"]
         ut["Tests unitaires : pytest"]
         hado["Hadolint"] --> build["Build de l'image"]
         build --> ctest["Tests du conteneur durci"]
@@ -100,7 +101,7 @@ flowchart TB
 | Phase | Risque traité | Contrôle | Bloquant |
 |---|---|---|---|
 | Code | usurpation d'auteur, modification non relue | commits signés, PR obligatoire, ruleset sans contournement | oui |
-| Code | secret écrit dans le dépôt | secrets lus dans l'environnement, `.dockerignore` en liste blanche, état Terraform hors du dépôt | — |
+| Code | secret écrit dans le dépôt | TruffleHog sur tout l'historique Git ; secrets lus dans l'environnement, `.dockerignore` en liste blanche, état Terraform hors du dépôt | oui |
 | Intégration | faille dans le code Python | Bandit, Semgrep (`p/python`, `p/flask`) | oui |
 | Intégration | dépendance vulnérable | pip-audit, Dependabot | oui |
 | Intégration | régression fonctionnelle ou de sécurité | 32 tests unitaires, tests du conteneur | oui |
@@ -113,7 +114,7 @@ flowchart TB
 | Exploitation | vulnérabilité découverte après coup | Dependabot (hebdomadaire), scan ECR à l'envoi | — |
 | Exploitation | investigation d'un incident | journaux CloudWatch (application, WAF), ALB et flux VPC | — |
 
-### Les 14 jobs de la pipeline
+### Les 15 jobs de la pipeline
 
 | Job | Outil | Quand | Obligatoire pour fusionner |
 |---|---|---|---|
@@ -122,6 +123,7 @@ flowchart TB
 | `SAST (Bandit)` | Bandit 1.9.4 | PR et `main` | oui |
 | `SAST (Semgrep)` | Semgrep 1.185.0 | PR et `main` | oui |
 | `SCA (pip-audit)` | pip-audit 2.10.1 | PR et `main` | oui |
+| `Secrets (TruffleHog)` | TruffleHog 3.99.8 | PR et `main` | oui |
 | `Lint Dockerfile (Hadolint)` | Hadolint 2.15.1 | PR et `main` | oui |
 | `Build (image Docker)` | Docker | PR et `main` | oui |
 | `Tests du conteneur` | `smoke_test.sh` | PR et `main` | oui |
@@ -216,6 +218,7 @@ Un *ruleset* GitHub (`protect-main`) s'applique à la branche par défaut, **san
 | `Tests unitaires (pytest)` | logique de l'application, stockage des mots de passe | PR #6 (mots de passe) |
 | `IaC Terraform (fmt, validate, test)` | format, validité et tests de l'infrastructure | PR #10 (backend Terraform) |
 | `IaC (Checkov)` | mauvaises configurations de l'infrastructure | PR #10 |
+| `Secrets (TruffleHog)` | secrets dans tout l'historique Git | PR de TruffleHog |
 
 Les jobs `Deploy (AWS)` et `DAST (OWASP ZAP)` ne sont pas obligatoires pour fusionner : ils ne s'exécutent qu'**après** la fusion, sur `main`.
 
@@ -265,7 +268,7 @@ Les deux commits de documentation du début (`docs: ...`) sont antérieurs à l'
 
 ### Analyses automatiques (pipeline CI)
 
-Fichier : `.github/workflows/ci.yml`. La pipeline s'exécute à chaque pull request vers `main` et à chaque push sur `main`. Les jobs d'analyse du code source sont les suivants ; la liste complète des 14 jobs est dans [la synthèse](#les-14-jobs-de-la-pipeline).
+Fichier : `.github/workflows/ci.yml`. La pipeline s'exécute à chaque pull request vers `main` et à chaque push sur `main`. Les jobs d'analyse du code source sont les suivants ; la liste complète des 15 jobs est dans [la synthèse](#les-15-jobs-de-la-pipeline).
 
 | Job | Outil | Type d'analyse | Ce qu'il vérifie |
 |---|---|---|---|
@@ -273,6 +276,7 @@ Fichier : `.github/workflows/ci.yml`. La pipeline s'exécute à chaque pull requ
 | SAST (Bandit) | Bandit | SAST | failles de sécurité connues dans le code Python |
 | SAST (Semgrep) | Semgrep (`p/python`, `p/flask`) | SAST | règles de sécurité Python et spécifiques à Flask |
 | SCA (pip-audit) | pip-audit | SCA | vulnérabilités connues (CVE, PYSEC) dans les dépendances |
+| Secrets (TruffleHog) | TruffleHog | détection de secrets | clés, jetons et mots de passe dans **tout l'historique Git** |
 
 Choix de configuration :
 
@@ -280,6 +284,7 @@ Choix de configuration :
 - `concurrency` : sur une pull request, un nouveau push annule l'exécution en cours (seul le dernier commit compte) ; sur `main`, jamais, pour ne pas interrompre un déploiement.
 - Jobs indépendants et parallèles : un échec est immédiatement attribuable à un outil.
 - Semgrep tourne dans son image Docker officielle (il ne fonctionne pas nativement sous Windows).
+- TruffleHog analyse l'historique complet (`fetch-depth: 0`) et non le seul dernier commit : un secret supprimé du code reste lisible dans les anciens commits, il faut alors le révoquer. Un secret « non vérifié » (que le service concerné n'a pas pu confirmer) bloque aussi la pipeline (`--results=verified,unverified,unknown`).
 - En complément, **Dependabot** surveille en continu les dépendances du dépôt et ouvre des alertes dans l'onglet *Security*.
 
 ### Constat initial
@@ -368,6 +373,14 @@ Détails de la correction du style (point 11) :
 - Les 74 remarques Flake8 d'origine venaient surtout d'une indentation à 2 espaces, d'espaces en fin de ligne et de lignes vides manquantes. Une partie a disparu au fil des corrections précédentes, le code réécrit étant déjà conforme ; les 24 restantes ont été corrigées dans un commit à part.
 - Ce reformatage est volontairement **isolé** des corrections de sécurité : les diffs de sécurité restent lisibles, et ce commit ne change aucun comportement (vérifié : mêmes réponses sur `/`, `password`, `1124`, `a` et mot de passe vide).
 - La longueur de ligne par défaut de PEP 8 (79 caractères) est conservée ; les longs messages sont découpés en chaînes concaténées.
+
+### Recherche de secrets (TruffleHog)
+
+Ajoutée après les autres analyses : TruffleHog parcourt chaque commit de chaque branche et reconnaît plus de 800 types de secrets (clés AWS, jetons GitHub, clés privées…), qu'il tente de vérifier auprès du service concerné.
+
+- Résultat sur le dépôt : **72 commits analysés, 0 secret** (ni vérifié, ni non vérifié).
+- Contrôle de l'outil : dans un dépôt jetable, un faux jeton GitHub ajouté puis **supprimé dans le commit suivant** est bien détecté dans l'historique (`Github, non vérifié, config.py`) et la commande échoue (code `183`). Le « 0 secret » du dépôt n'est donc pas le résultat d'un outil qui ne voit rien.
+- Le job `Deploy (AWS)` attend aussi ce contrôle.
 
 ### Bilan de l'audit du code
 
@@ -473,7 +486,7 @@ La PR Dependabot n'a pas été fusionnée telle quelle : la montée de version e
 ### Sécurité de la chaîne CI elle-même
 
 - **Actions figées par SHA** (`actions/checkout@3d3c42e…  # v7.0.1`) : un tag peut être déplacé vers du code malveillant, une empreinte de commit non. Les versions sont rappelées en commentaire.
-- **Outils figés par version** (Flake8, Bandit, pip-audit, Semgrep, Hadolint, Trivy, Dockle, Terraform, Checkov, OWASP ZAP) : un même code donne toujours le même résultat de scan.
+- **Outils figés par version** (Flake8, Bandit, pip-audit, Semgrep, Hadolint, Trivy, Dockle, TruffleHog, Terraform, Checkov, OWASP ZAP) : un même code donne toujours le même résultat de scan.
 - **`persist-credentials: false`** : le jeton GitHub n'est pas laissé dans le dépôt cloné, les étapes suivantes ne peuvent pas le réutiliser.
 - **Dependabot** (`.github/dependabot.yml`) propose chaque semaine les mises à jour des dépendances Python, de l'image de base, des actions et des fournisseurs Terraform. Chaque mise à jour arrive en pull request et doit passer les checks obligatoires.
 
@@ -689,8 +702,8 @@ terraform destroy -var "image_tag=$TAG"
 
 ```mermaid
 flowchart LR
-    pr[Pull request] --> ci[12 contrôles<br/>obligatoires]
-    ci -->|fusion sur main| ci2[12 contrôles<br/>relancés sur main]
+    pr[Pull request] --> ci[13 contrôles<br/>obligatoires]
+    ci -->|fusion sur main| ci2[13 contrôles<br/>relancés sur main]
     ci2 --> ok{Approbation<br/>production}
     ok --> ecr[Image testée<br/>envoyée dans ECR]
     ecr --> tf[terraform plan<br/>puis apply]
@@ -702,7 +715,7 @@ flowchart LR
 
 | Job | Ce qu'il fait | Garanties de sécurité |
 |---|---|---|
-| `Deploy (AWS)` | envoie l'image dans ECR (tag = SHA du commit), `terraform plan` puis `apply` de ce plan, attend la stabilité du service ECS, vérifie l'application en HTTPS | ne démarre que sur un push sur `main` et après la réussite des **12 contrôles** ; l'image envoyée est l'**artefact** testé et scanné, pas une reconstruction ; le job vérifie que l'image en service porte bien le SHA du commit |
+| `Deploy (AWS)` | envoie l'image dans ECR (tag = SHA du commit), `terraform plan` puis `apply` de ce plan, attend la stabilité du service ECS, vérifie l'application en HTTPS | ne démarre que sur un push sur `main` et après la réussite des **13 contrôles** ; l'image envoyée est l'**artefact** testé et scanné, pas une reconstruction ; le job vérifie que l'image en service porte bien le SHA du commit |
 | `DAST (OWASP ZAP)` | scan *baseline* (passif) de l'URL publique, rapport HTML et JSON en artefact (30 jours) | tout avertissement fait échouer la pipeline, sauf les alertes ignorées avec justification dans `.zap/rules.tsv` |
 
 #### Maîtrise de l'accès au déploiement

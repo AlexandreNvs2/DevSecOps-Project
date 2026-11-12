@@ -90,6 +90,27 @@ jobs:
       - run: pip install pip-audit==2.10.1
       - run: pip-audit -r app/app/requirements.txt
 
+  # Secrets (clés, jetons, mots de passe) dans TOUT l'historique Git : un
+  # secret supprimé du code reste lisible dans les anciens commits.
+  secrets:
+    name: Secrets (TruffleHog)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # historique complet, pas seulement le dernier commit
+      # --results=verified,unverified,unknown : un secret non vérifiable (ou
+      # qu'AWS, GitHub... n'ont pas pu confirmer) bloque aussi la pipeline.
+      # safe.directory : le dépôt monté appartient à l'utilisateur du runner,
+      # pas à root, l'utilisateur du conteneur.
+      - name: Secrets dans tout l'historique Git
+        run: >
+          docker run --rm -v "$PWD:/repo:ro"
+          -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*'
+          trufflesecurity/trufflehog:3.99.8
+          git file:///repo --no-update --fail --results=verified,unverified,unknown
+
   # ---------------------------------------------------------------------------
   # Image Docker : lint, construction, tests, analyses de sécurité
   # ---------------------------------------------------------------------------
@@ -225,6 +246,7 @@ jobs:
       - image-dockle
       - iac-terraform
       - iac-checkov
+      - secrets
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Environnement GitHub protégé : approbation manuelle avant chaque
