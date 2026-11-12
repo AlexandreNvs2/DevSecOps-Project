@@ -6,7 +6,14 @@
 # - versionné (retour arrière possible après une erreur ou une corruption) ;
 # - inaccessible publiquement et uniquement en HTTPS ;
 # - journalisé (accès tracés dans un bucket de journaux séparé) ;
-# - protégé contre la suppression accidentelle (prevent_destroy).
+# - protégé contre la suppression accidentelle.
+#
+# Les deux buckets sont créés par create-buckets.sh et non par une ressource
+# aws_s3_bucket : après chaque création ou lecture, le fournisseur AWS lit la
+# configuration Object Lock du bucket (s3:GetBucketObjectLockConfiguration),
+# action refusée explicitement par une SCP du Learner Lab. Terraform gère en
+# revanche toute la configuration de sécurité des buckets ci-dessous, et ne
+# peut pas les supprimer (protection contre un « terraform destroy »).
 
 data "aws_caller_identity" "current" {}
 
@@ -16,6 +23,8 @@ locals {
   account_id  = data.aws_caller_identity.current.account_id
   state_name  = "devsecops-tfstate-${local.account_id}"
   logs_name   = "devsecops-tfstate-logs-${local.account_id}"
+  state_arn   = "arn:aws:s3:::${local.state_name}"
+  logs_arn    = "arn:aws:s3:::${local.logs_name}"
   account_arn = "arn:aws:iam::${local.account_id}:root"
 }
 
@@ -26,6 +35,11 @@ resource "aws_kms_key" "state" {
   description             = "Chiffrement de l'etat Terraform"
   enable_key_rotation     = true
   deletion_window_in_days = 30
+
+  # Supprimer cette clé rendrait l'état illisible.
+  lifecycle {
+    prevent_destroy = true
+  }
 
   # Politique explicite : seul le compte (donc ses identités IAM autorisées)
   # peut utiliser la clé.
@@ -47,27 +61,17 @@ resource "aws_kms_alias" "state" {
 }
 
 # ---------------------------------------------------------------------------
-# Bucket de l'état
+# Configuration du bucket de l'état
 # ---------------------------------------------------------------------------
-resource "aws_s3_bucket" "state" {
-  #checkov:skip=CKV_AWS_144:Réplication inter-régions impossible : elle exige un rôle IAM dédié, que le Learner Lab interdit de créer, et le lab est limité à us-east-1. Le versioning couvre la restauration (test bootstrap.tftest.hcl).
-  #checkov:skip=CKV2_AWS_62:Pas de notification d'événements : aucun consommateur. Chaque modification reste traçable par le versioning et les journaux d'accès.
-  bucket = local.state_name
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
 resource "aws_s3_bucket_versioning" "state" {
-  bucket = aws_s3_bucket.state.id
+  bucket = local.state_name
   versioning_configuration {
     status = "Enabled"
   }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
-  bucket = aws_s3_bucket.state.id
+  bucket = local.state_name
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
@@ -78,7 +82,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
 }
 
 resource "aws_s3_bucket_public_access_block" "state" {
-  bucket                  = aws_s3_bucket.state.id
+  bucket                  = local.state_name
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -86,14 +90,14 @@ resource "aws_s3_bucket_public_access_block" "state" {
 }
 
 resource "aws_s3_bucket_ownership_controls" "state" {
-  bucket = aws_s3_bucket.state.id
+  bucket = local.state_name
   rule {
     object_ownership = "BucketOwnerEnforced"
   }
 }
 
 resource "aws_s3_bucket_policy" "state" {
-  bucket = aws_s3_bucket.state.id
+  bucket = local.state_name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -101,7 +105,7 @@ resource "aws_s3_bucket_policy" "state" {
       Effect    = "Deny"
       Principal = "*"
       Action    = "s3:*"
-      Resource  = [aws_s3_bucket.state.arn, "${aws_s3_bucket.state.arn}/*"]
+      Resource  = [local.state_arn, "${local.state_arn}/*"]
       Condition = { Bool = { "aws:SecureTransport" = "false" } }
     }]
   })
@@ -110,7 +114,7 @@ resource "aws_s3_bucket_policy" "state" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "state" {
-  bucket = aws_s3_bucket.state.id
+  bucket = local.state_name
 
   rule {
     id     = "anciennes-versions"
@@ -130,35 +134,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
 }
 
 resource "aws_s3_bucket_logging" "state" {
-  bucket        = aws_s3_bucket.state.id
-  target_bucket = aws_s3_bucket.logs.id
+  bucket        = local.state_name
+  target_bucket = local.logs_name
   target_prefix = "state-access/"
 }
 
 # ---------------------------------------------------------------------------
-# Bucket des journaux d'accès
+# Configuration du bucket des journaux d'accès
 # ---------------------------------------------------------------------------
-resource "aws_s3_bucket" "logs" {
-  #checkov:skip=CKV_AWS_18:Bucket de journaux : il ne peut pas journaliser ses propres accès (boucle infinie).
-  #checkov:skip=CKV_AWS_144:Réplication inter-régions impossible (pas de création de rôle IAM dans le Learner Lab, région unique).
-  #checkov:skip=CKV2_AWS_62:Pas de notification d'événements : aucun consommateur.
-  #checkov:skip=CKV_AWS_145:Les journaux d'accès S3 ne peuvent être livrés que dans un bucket chiffré en SSE-S3 (AES-256), pas en SSE-KMS (exigence AWS).
-  bucket = local.logs_name
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
 resource "aws_s3_bucket_versioning" "logs" {
-  bucket = aws_s3_bucket.logs.id
+  bucket = local.logs_name
   versioning_configuration {
     status = "Enabled"
   }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
-  bucket = aws_s3_bucket.logs.id
+  bucket = local.logs_name
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
@@ -167,7 +159,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "logs" {
 }
 
 resource "aws_s3_bucket_public_access_block" "logs" {
-  bucket                  = aws_s3_bucket.logs.id
+  bucket                  = local.logs_name
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -175,7 +167,7 @@ resource "aws_s3_bucket_public_access_block" "logs" {
 }
 
 resource "aws_s3_bucket_ownership_controls" "logs" {
-  bucket = aws_s3_bucket.logs.id
+  bucket = local.logs_name
   rule {
     object_ownership = "BucketOwnerEnforced"
   }
@@ -184,7 +176,7 @@ resource "aws_s3_bucket_ownership_controls" "logs" {
 # Autorise uniquement le service de journalisation S3, pour le bucket de
 # l'état de ce compte, à écrire les journaux ; refuse tout accès hors HTTPS.
 resource "aws_s3_bucket_policy" "logs" {
-  bucket = aws_s3_bucket.logs.id
+  bucket = local.logs_name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -193,9 +185,9 @@ resource "aws_s3_bucket_policy" "logs" {
         Effect    = "Allow"
         Principal = { Service = "logging.s3.amazonaws.com" }
         Action    = "s3:PutObject"
-        Resource  = "${aws_s3_bucket.logs.arn}/state-access/*"
+        Resource  = "${local.logs_arn}/state-access/*"
         Condition = {
-          ArnLike      = { "aws:SourceArn" = aws_s3_bucket.state.arn }
+          ArnLike      = { "aws:SourceArn" = local.state_arn }
           StringEquals = { "aws:SourceAccount" = local.account_id }
         }
       },
@@ -204,7 +196,7 @@ resource "aws_s3_bucket_policy" "logs" {
         Effect    = "Deny"
         Principal = "*"
         Action    = "s3:*"
-        Resource  = [aws_s3_bucket.logs.arn, "${aws_s3_bucket.logs.arn}/*"]
+        Resource  = [local.logs_arn, "${local.logs_arn}/*"]
         Condition = { Bool = { "aws:SecureTransport" = "false" } }
       },
     ]
@@ -214,7 +206,7 @@ resource "aws_s3_bucket_policy" "logs" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "logs" {
-  bucket = aws_s3_bucket.logs.id
+  bucket = local.logs_name
 
   rule {
     id     = "expiration-journaux"
