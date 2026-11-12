@@ -9,9 +9,12 @@ on:
 permissions:
   contents: read
 
+# Sur une pull request, un nouveau push annule l'analyse en cours. Sur main,
+# jamais : interrompre un déploiement en plein « terraform apply » laisserait
+# l'infrastructure dans un état intermédiaire.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: password-checker:${{ github.sha }}
@@ -201,3 +204,139 @@ jobs:
         run: >
           docker run --rm -v "$PWD:/w" -w /w bridgecrew/checkov:3.4.4
           -d infra --framework terraform --compact
+
+  # ---------------------------------------------------------------------------
+  # Déploiement continu (main uniquement) puis analyse dynamique
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy (AWS)
+    # Uniquement après la réussite de TOUS les contrôles ci-dessus, et
+    # uniquement sur main (jamais depuis une pull request).
+    needs:
+      - lint
+      - unit-tests
+      - sast-bandit
+      - sast-semgrep
+      - sca
+      - dockerfile-lint
+      - build
+      - image-test
+      - image-trivy
+      - image-dockle
+      - iac-terraform
+      - iac-checkov
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Environnement GitHub protégé : approbation manuelle avant chaque
+    # déploiement ; les identifiants AWS n'existent que dans cet environnement.
+    environment:
+      name: production
+      url: ${{ steps.url.outputs.url }}
+    # Un seul déploiement à la fois, jamais annulé en cours de route.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+    env:
+      # Identifiants temporaires du Learner Lab (OIDC interdit dans le lab),
+      # à renouveler à chaque session. Masqués dans les journaux par GitHub.
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: us-east-1
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Identifiants AWS valides
+        run: |
+          aws sts get-caller-identity >/dev/null || {
+            echo "::error::Identifiants AWS invalides ou expirés : recoller ceux du lab dans l'environnement production."
+            exit 1
+          }
+
+      # L'image envoyée est celle construite, testée et analysée par les jobs
+      # précédents (artefact), et non une nouvelle construction.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+      - name: Image envoyée dans ECR (tag = SHA du commit)
+        run: |
+          docker load -i image.tar
+          repo="$(aws ecr describe-repositories --repository-names password-checker \
+            --query 'repositories[0].repositoryUri' --output text)"
+          registry="${repo%%/*}"
+          if aws ecr describe-images --repository-name password-checker \
+               --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "Image $TAG déjà présente (tags immuables)."
+          else
+            aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+            docker tag "$IMAGE" "$repo:$TAG"
+            docker push "$repo:$TAG"
+            docker logout "$registry"
+          fi
+
+      - name: Terraform (plan puis apply du plan)
+        run: >
+          docker run --rm -v "$PWD:/w" -w /w/infra/platform
+          -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN
+          -e AWS_REGION -e TF_STATE_BUCKET -e TAG -e TF_IN_AUTOMATION=1
+          --entrypoint sh hashicorp/terraform:1.17.1 -c '
+          set -e;
+          terraform init -input=false -lockfile=readonly -backend-config="bucket=$TF_STATE_BUCKET";
+          terraform plan -input=false -var "image_tag=$TAG" -out=tfplan;
+          terraform apply -input=false tfplan;
+          rm -f tfplan'
+
+      - name: Attente de la stabilité du service ECS
+        run: aws ecs wait services-stable --cluster password-checker --services password-checker
+
+      - name: Image en service = image du commit
+        run: |
+          td="$(aws ecs describe-services --cluster password-checker --services password-checker \
+            --query 'services[0].taskDefinition' --output text)"
+          image="$(aws ecs describe-task-definition --task-definition "$td" \
+            --query 'taskDefinition.containerDefinitions[0].image' --output text)"
+          [ "${image##*:}" = "$TAG" ] || { echo "::error::image en service : ${image##*:}, attendue : $TAG"; exit 1; }
+
+      - name: Adresse publique
+        id: url
+        run: |
+          url="$(docker run --rm -v "$PWD:/w" -w /w/infra/platform \
+            -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
+            hashicorp/terraform:1.17.1 output -raw url)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # -k : certificat auto-signé (pas de nom de domaine dans le lab).
+      - name: Application en ligne (HTTPS)
+        env:
+          URL: ${{ steps.url.outputs.url }}
+        run: curl -fsSk --retry 10 --retry-delay 10 --retry-all-errors -o /dev/null "$URL/"
+
+  dast:
+    name: DAST (OWASP ZAP)
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Scan passif (baseline) de l'application en ligne : en-têtes, cookies,
+      # divulgation d'informations... Tout avertissement fait échouer le job,
+      # sauf les règles ignorées avec justification dans .zap/rules.tsv.
+      - name: Analyse dynamique de l'application déployée
+        env:
+          URL: ${{ needs.deploy.outputs.url }}
+        run: |
+          mkdir -p zap && cp .zap/rules.tsv zap/ && chmod -R a+rwx zap
+          docker run --rm -v "$PWD/zap:/zap/wrk:rw" zaproxy/zap-stable:2.17.0 \
+            zap-baseline.py -t "$URL" -c rules.tsv -r rapport-zap.html -J rapport-zap.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: rapport-zap
+          path: zap/rapport-zap.*
+          retention-days: 30
