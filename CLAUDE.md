@@ -29,7 +29,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 
 - GitHub : https://github.com/AlexandreNvs2/DevSecOps-Project, CI/CD avec **GitHub Actions** (le cours utilisait GitLab ; choix assumé et documenté).
 - Ruleset `protect-main` sur `main`, sans aucune exception : PR obligatoire (0 approbation, projet réalisé seul), **commits signés** (SSH ed25519), pas de force push ni de suppression, discussions résolues, fusion par merge ou squash (pas de rebase), branche à jour et **checks obligatoires**.
-- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`. **À ajouter** : `Tests unitaires (pytest)`.
+- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)` (10 checks, vérifié le 12 novembre 2026).
 - Dependabot actif (pip, image Docker, actions GitHub).
 
 ## Architecture actuelle
@@ -66,9 +66,8 @@ Conséquences : utiliser `LabRole` comme rôle d'exécution et de tâche ECS ; p
 
 ## Prochaines étapes
 
-1. Ajouter `Tests unitaires (pytest)` aux checks obligatoires du ruleset.
-2. Analyser la PR Dependabot #5 (image `python:3.15.0-slim-trixie`, pipeline rouge) : ne pas la fusionner telle quelle. Causes probables : la ligne `zlib1g` figée (rétrogradation refusée) ou la compatibilité Python 3.15.
-3. **Déploiement AWS** (critères 1 et 4), en Terraform, scanné par Checkov :
+1. Analyser la PR Dependabot #5 (image `python:3.15.0-slim-trixie`, pipeline rouge) : ne pas la fusionner telle quelle. Causes probables : la ligne `zlib1g` figée (rétrogradation refusée) ou la compatibilité Python 3.15.
+2. **Déploiement AWS** (critères 1 et 4), en Terraform, scanné par Checkov :
    - VPC sur 2 zones, sous-réseaux publics (ALB) et privés (ECS, RDS), NAT ;
    - ALB en HTTPS (certificat auto-signé importé dans ACM), WAF avec règle de limitation de débit sur `/login` ;
    - ECS Fargate, 2 tâches sur 2 zones, security group n'acceptant que l'ALB ;
@@ -76,8 +75,8 @@ Conséquences : utiliser `LabRole` comme rôle d'exécution et de tâche ECS ; p
    - Secrets Manager pour `SECRET_KEY` et le mot de passe de la base ;
    - ECR (scan à l'envoi, tags immuables), CloudWatch Logs ;
    - pipeline de déploiement sur `main` (push de l'image vers ECR, `terraform apply`), puis DAST avec OWASP ZAP sur l'URL publique.
-4. README final : schéma d'architecture (Mermaid), workflow du cycle de vie sécurisé, relecture.
-5. Optionnel : job TruffleHog (recherche de secrets) dans la pipeline, vu dans l'activité 7 du cours.
+3. README final : schéma d'architecture (Mermaid), workflow du cycle de vie sécurisé, relecture.
+4. Optionnel : job TruffleHog (recherche de secrets) dans la pipeline, vu dans l'activité 7 du cours.
 
 ## Poste de travail
 
