@@ -1,3 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
+
+# Terraform : répertoires de travail et états locaux (jamais versionnés,
+# un état peut contenir des secrets). Le fichier .terraform.lock.hcl,
+# lui, est versionné : il fige les fournisseurs par empreinte.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
