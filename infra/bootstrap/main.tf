@@ -185,9 +185,9 @@ resource "aws_s3_bucket_policy" "logs" {
         Effect    = "Allow"
         Principal = { Service = "logging.s3.amazonaws.com" }
         Action    = "s3:PutObject"
-        Resource  = "${local.logs_arn}/state-access/*"
+        Resource  = ["${local.logs_arn}/state-access/*", "${local.logs_arn}/app-logs-access/*"]
         Condition = {
-          ArnLike      = { "aws:SourceArn" = local.state_arn }
+          ArnLike      = { "aws:SourceArn" = [local.state_arn, local.app_logs_arn] }
           StringEquals = { "aws:SourceAccount" = local.account_id }
         }
       },

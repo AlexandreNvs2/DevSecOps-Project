@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Crée les deux buckets de l'état Terraform, avant « terraform apply ».
+# Crée les buckets S3 du projet, avant « terraform apply » :
+# - devsecops-tfstate-<compte>      : état Terraform ;
+# - devsecops-tfstate-logs-<compte> : journaux d'accès à l'état ;
+# - devsecops-logs-<compte>         : journaux de l'ALB et du VPC.
 #
 # Pourquoi un script et pas une ressource aws_s3_bucket : le fournisseur
 # Terraform AWS lit la configuration Object Lock de chaque bucket qu'il gère
@@ -16,7 +19,8 @@ set -euo pipefail
 region="${AWS_REGION:-us-east-1}"
 account="$(aws sts get-caller-identity --query Account --output text)"
 
-for name in "devsecops-tfstate-${account}" "devsecops-tfstate-logs-${account}"; do
+for name in "devsecops-tfstate-${account}" "devsecops-tfstate-logs-${account}" \
+  "devsecops-logs-${account}"; do
   if aws s3api head-bucket --bucket "$name" --expected-bucket-owner "$account" 2>/dev/null; then
     echo "Déjà présent : $name"
   else
