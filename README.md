@@ -252,13 +252,13 @@ L'image est construite en **deux étapes** (*multi-stage build*) à partir d'une
 
 | Mesure | Détail | Pourquoi |
 |---|---|---|
-| Image de base minimale | `python:3.13.18-slim-trixie` | moins de paquets système, donc moins de vulnérabilités et de surface d'attaque |
-| Base figée par **digest** | `@sha256:e48f59cd…` | l'image construite est toujours la même ; une image modifiée sur le registre ne correspondrait plus à l'empreinte |
+| Image de base minimale | `python:3.15.0-slim-trixie` | moins de paquets système, donc moins de vulnérabilités et de surface d'attaque |
+| Base figée par **digest** | `@sha256:f5b92f2a…` | l'image construite est toujours la même ; une image modifiée sur le registre ne correspondrait plus à l'empreinte |
 | Utilisateur dédié **non root** | `app`, uid 10001, sans shell (`nologin`) ni répertoire personnel ; déclaré par identifiant numérique (`USER 10001:10001`) | un attaquant qui prendrait le contrôle de l'application n'aurait aucun privilège ; l'identifiant numérique permet de vérifier « non root » sans lire `/etc/passwd` (Hadolint DL3066) |
 | Code en lecture seule | fichiers appartenant à `root`, l'utilisateur `app` ne peut que les lire | l'application ne peut pas modifier son propre code |
 | **pip retiré** de l'image finale | désinstallé du système et de l'environnement virtuel | rien ne peut être installé dans le conteneur en production |
 | Bits **setuid/setgid retirés** | `find / -xdev -perm /6000 -exec chmod a-s` | aucun binaire (`su`, `passwd`, `mount`…) ne peut s'exécuter avec les droits root |
-| Correctifs Debian appliqués | `zlib1g` mis à jour en version corrigée figée | voir les corrections ci-dessous |
+| Correctifs Debian appliqués | `zlib1g`, `apt` et `libapt-pkg7.0` mis à jour en versions corrigées figées | voir les corrections ci-dessous |
 | Pas de cache pip | `--no-cache-dir` | image plus petite, pas de fichiers inutiles |
 | Secrets absents de l'image | `SECRET_KEY` fournie au lancement uniquement | une image publiée ou volée ne contient aucun secret |
 | Serveur de production | `CMD ["gunicorn", "main:app"]`, `GUNICORN_BIND=0.0.0.0:8080` | voir la correction du point 5 ; seul le conteneur ouvre l'écoute |
@@ -318,6 +318,16 @@ Sur la première exécution de la pipeline (PR `feat/docker`), le build et les t
 | Dockle | `CIS-DI-0005` (info) : Docker Content Trust non activé | Non bloquant, non appliqué : Docker Content Trust (Notary v1) est abandonné. L'intégrité de l'image de base est garantie par son **digest** figé dans le `Dockerfile`. |
 
 Une alerte n'est jamais masquée sans justification : chaque exception est commentée dans `ci.yml`, documentée ici, et couverte par un test qui prouve que le risque est absent.
+
+### Passage à Python 3.15 (PR Dependabot #5)
+
+Dependabot a proposé l'image `python:3.15.0-slim-trixie`. Tous les checks passaient (tests unitaires et tests du conteneur compris), sauf Trivy :
+
+| Outil | Constat | Correction |
+|---|---|---|
+| Trivy | 2 vulnérabilités **HIGH** : `apt` et `libapt-pkg7.0` `3.0.3` (CVE-2026-109518, exécution de code à distance par réutilisation de liens physiques pendant le téléchargement des paquets), corrigées en `3.0.4`. L'image 3.15.0 a été construite avant ce correctif, alors que l'image 3.13.18 l'incluait déjà. | Même méthode que pour `zlib1g` : mise à jour ciblée vers la version corrigée **figée** (`apt=3.0.4`, `libapt-pkg7.0=3.0.4`). À retirer quand Dependabot proposera une image 3.15 qui l'inclut. |
+
+La PR Dependabot n'a pas été fusionnée telle quelle : la montée de version et le correctif sont regroupés dans la branche `fix/python-3.15`, et la version de Python des jobs CI (lint, tests, SAST, SCA) passe aussi à 3.15 pour analyser le code avec la même version que l'image. La ligne `zlib1g` reste nécessaire : l'image 3.15.0 contient toujours la version vulnérable.
 
 ### Sécurité de la chaîne CI elle-même
 
