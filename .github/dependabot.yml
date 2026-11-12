@@ -16,3 +16,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # Fournisseurs Terraform (le fichier .terraform.lock.hcl est mis à jour
+  # avec les nouvelles empreintes).
+  - package-ecosystem: terraform
+    directories:
+      - /infra/*
+    schedule:
+      interval: weekly

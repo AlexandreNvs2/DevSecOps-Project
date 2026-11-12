@@ -8,7 +8,7 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 2. [Gestion sécurisée du versioning](#gestion-sécurisée-du-versioning)
 3. [Sécurisation du code source](#sécurisation-du-code-source)
 4. [Image Docker et pipeline CI](#image-docker-et-pipeline-ci)
-5. Déploiement sécurisé sur AWS *(à venir)*
+5. [Déploiement sécurisé sur AWS](#déploiement-sécurisé-sur-aws) *(en cours)*
 6. [Stockage sécurisé des mots de passe](#stockage-sécurisé-des-mots-de-passe)
 7. Architecture et cycle de vie sécurisé *(à venir)*
 
@@ -25,8 +25,9 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 - `.dockerignore` : liste blanche des fichiers envoyés au build Docker.
 - `tests/unit/` : tests unitaires (pytest).
 - `tests/container/smoke_test.sh` : tests de fonctionnement et de sécurité du conteneur.
+- `infra/bootstrap/` : Terraform du stockage de l'état Terraform (bucket S3 chiffré, clé KMS, journaux d'accès) et ses tests.
 - `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
-- `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base et des actions.
+- `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base, des actions et des fournisseurs Terraform.
 - `CLAUDE.md` : contexte du projet pour l'assistant IA Claude Code (règles de travail, état d'avancement, contraintes AWS). Il permet de reprendre le travail sur une autre machine et documente de façon transparente l'usage de l'IA : l'assistant a rédigé le code et la documentation en expliquant chaque choix ; les commits, les push, les fusions et la configuration GitHub ont été faits par l'auteur.
 
 ## Gestion sécurisée du versioning
@@ -55,7 +56,7 @@ Un *ruleset* GitHub (`protect-main`) s'applique à la branche par défaut, **san
 | Require a pull request before merging | aucun push direct : toute modification passe par une pull request |
 | Require conversation resolution | une PR ne peut pas être fusionnée tant qu'une discussion reste ouverte |
 | Méthodes de fusion : merge et squash | le *rebase merge* est désactivé, car GitHub ne peut pas signer les commits rebasés |
-| Require status checks to pass | une PR ne peut être fusionnée que si les 4 jobs de la pipeline réussissent |
+| Require status checks to pass | une PR ne peut être fusionnée que si les jobs obligatoires de la pipeline réussissent |
 | Require branches to be up to date | la PR doit être testée sur la dernière version de `main` avant la fusion |
 
 **Nombre d'approbations requis : 0.** Le projet est réalisé seul et GitHub interdit d'approuver sa propre pull request ; exiger une approbation bloquerait toute fusion. Dans une équipe, ce nombre serait fixé à au moins 1.
@@ -74,6 +75,8 @@ Un *ruleset* GitHub (`protect-main`) s'applique à la branche par défaut, **san
 | `Scan image (Trivy)` | vulnérabilités de l'image | PR #4 |
 | `Scan image (Dockle)` | CIS Docker Benchmark | PR #4 |
 | `Tests unitaires (pytest)` | logique de l'application, stockage des mots de passe | PR du stockage des mots de passe |
+| `IaC Terraform (fmt, validate, test)` | format, validité et tests de l'infrastructure | PR du backend Terraform |
+| `IaC (Checkov)` | mauvaises configurations de l'infrastructure | PR du backend Terraform |
 
 Ces checks sont rattachés à **GitHub Actions** : un autre outil ou un statut posé à la main ne peut pas les satisfaire. La sécurité devient une **condition bloquante** de la livraison : aucune modification n'arrive sur `main` si un scan échoue, et la règle s'applique aussi au propriétaire du dépôt.
 
@@ -335,6 +338,90 @@ La PR Dependabot n'a pas été fusionnée telle quelle : la montée de version e
 - **Outils figés par version** (Flake8, Bandit, pip-audit, Semgrep, Hadolint, Trivy, Dockle) : un même code donne toujours le même résultat de scan.
 - **`persist-credentials: false`** : le jeton GitHub n'est pas laissé dans le dépôt cloné, les étapes suivantes ne peuvent pas le réutiliser.
 - **Dependabot** (`.github/dependabot.yml`) propose chaque semaine les mises à jour des dépendances Python, de l'image de base et des actions. Chaque mise à jour arrive en pull request et doit passer les checks obligatoires.
+
+## Déploiement sécurisé sur AWS
+
+### Environnement et contraintes
+
+Le déploiement cible un compte **AWS Academy Learner Lab**, région `us-east-1`. Ce bac à sable impose des limites qui orientent plusieurs choix :
+
+| Contrainte du lab | Conséquence | En production |
+|---|---|---|
+| Identifiants **temporaires** (environ 4 h), renouvelés à chaque session | stockés dans `~/.aws/credentials` en local et dans les secrets GitHub pour la pipeline, à renouveler à chaque session ; jamais écrits dans le dépôt | fédération **OIDC** GitHub → AWS : aucun identifiant stocké, jeton de courte durée par exécution |
+| Création de **rôles IAM** et de fournisseur OIDC interdite | utilisation du rôle imposé `LabRole` pour ECS ; pas de réplication S3 inter-régions | un rôle par usage (exécution ECS, tâche, déploiement), chacun limité au strict nécessaire |
+| Pas de nom de domaine | HTTPS avec un certificat **auto-signé** importé dans ACM (avertissement du navigateur) | certificat ACM validé par DNS sur un domaine de l'entreprise |
+| Budget limité | un seul NAT Gateway au lieu d'un par zone ; infrastructure détruite en fin de session (`terraform destroy`) | un NAT par zone pour la haute disponibilité |
+
+### Architecture cible
+
+L'infrastructure est entièrement décrite en **Terraform** (*Infrastructure as Code*) : elle est relue en pull request, analysée par Checkov et reproductible.
+
+- **Réseau** : VPC sur 2 zones de disponibilité ; sous-réseaux publics pour l'ALB, privés pour ECS et RDS ; NAT Gateway pour les sorties (ECR, Secrets Manager, CloudWatch).
+- **Entrée** : Application Load Balancer en **HTTPS** (HTTP redirigé vers HTTPS), protégé par **AWS WAF** (règles gérées AWS et limitation de débit sur `/login` contre la force brute).
+- **Application** : **ECS Fargate**, 2 tâches réparties sur 2 zones ; leur groupe de sécurité n'accepte que le trafic venant de l'ALB.
+- **Base de données** : **RDS PostgreSQL** chiffré, privé, n'acceptant que les tâches ECS. Mot de passe généré et stocké par AWS dans Secrets Manager (`manage_master_user_password`), jamais connu de Terraform.
+- **Secrets** : **Secrets Manager** pour `SECRET_KEY` et le mot de passe de la base, injectés dans les conteneurs au démarrage (jamais dans l'image ni dans le dépôt).
+- **Images** : **ECR** avec scan à l'envoi et tags immuables (une image publiée ne peut pas être remplacée).
+- **Journaux** : **CloudWatch Logs** pour les conteneurs.
+
+Le schéma d'architecture complet sera ajouté une fois l'infrastructure déployée.
+
+### Plan de réalisation
+
+Le déploiement est découpé en trois pull requests, chacune analysée par la pipeline :
+
+| Étape | Branche | Contenu | Critère |
+|---|---|---|---|
+| 1 | `feat/terraform-backend` | stockage sécurisé de l'état Terraform, jobs Terraform et Checkov dans la CI | prérequis |
+| 2 | `feat/aws-infra` | réseau, ALB et WAF, ECS Fargate, RDS, Secrets Manager, ECR, CloudWatch | application déployée dans le cloud |
+| 3 | `ci/deploy` | pipeline de déploiement sur `main` : push de l'image vers ECR, `terraform apply`, puis analyse dynamique (DAST) avec **OWASP ZAP** sur l'URL publique | déploiement sécurisé depuis la CI/CD |
+
+### Étape 1 : stockage sécurisé de l'état Terraform
+
+Terraform enregistre dans un **état** (*state*) la description de toute l'infrastructure qu'il gère. Cet état peut contenir des données sensibles (la `SECRET_KEY` générée, la clé privée du certificat auto-signé) : le laisser sur un poste ou le versionner dans Git serait une fuite de secrets. Il est donc stocké dans un bucket S3 dédié, partagé par le poste de développement et la pipeline.
+
+Ce bucket est créé une seule fois par le module `infra/bootstrap/`, dont l'état reste local (il ne contient aucun secret, et ce module ne peut pas stocker son état dans un bucket qui n'existe pas encore).
+
+| Mesure | Détail | Pourquoi |
+|---|---|---|
+| Chiffrement **KMS** | clé dédiée `alias/devsecops-tfstate`, rotation annuelle | les secrets de l'état sont illisibles sans droit sur la clé |
+| **Versioning** | anciennes versions conservées 90 jours | retour arrière après une erreur ou une corruption de l'état |
+| **Accès public bloqué** | les 4 options de *Block Public Access*, ACL désactivées (`BucketOwnerEnforced`) | l'état ne peut jamais devenir public, même par erreur |
+| **HTTPS obligatoire** | politique refusant toute requête avec `aws:SecureTransport = false` | pas d'interception de l'état en transit |
+| **Journaux d'accès** | bucket de journaux séparé, conservés 1 an | chaque lecture ou écriture de l'état est tracée |
+| **Verrouillage** | verrouillage natif S3 (`use_lockfile`, Terraform ≥ 1.10) | deux `terraform apply` simultanés (poste et CI) ne peuvent pas corrompre l'état |
+| Protection contre la suppression | `prevent_destroy` | un `terraform destroy` ne peut pas effacer l'état par erreur |
+| Nom sans donnée du compte dans le dépôt | numéro de compte lu à l'exécution (`aws_caller_identity`) | aucune information du compte AWS n'est versionnée |
+
+Création (une seule fois, identifiants du lab chargés) :
+
+```bash
+cd infra/bootstrap
+terraform init
+terraform apply
+```
+
+### Sécurité de l'Infrastructure as Code dans la CI
+
+Deux jobs analysent le dossier `infra/` à chaque pull request, sans aucun identifiant AWS :
+
+| Job | Outil | Ce qu'il vérifie |
+|---|---|---|
+| `IaC Terraform (fmt, validate, test)` | Terraform 1.17.1 | format du code, validité de la configuration, tests `terraform test` avec un fournisseur AWS **simulé** (`mock_provider`) |
+| `IaC (Checkov)` | Checkov 3.4.4 | mauvaises configurations de sécurité (chiffrement, accès public, journalisation…) selon les bonnes pratiques AWS et CIS |
+
+Les fournisseurs Terraform sont figés par version et par **empreinte** dans `.terraform.lock.hcl` (versionné, vérifié avec `-lockfile=readonly`) : un fournisseur modifié sur le registre serait refusé. Dependabot propose leurs mises à jour.
+
+Résultat Checkov sur le module `bootstrap` : **36 contrôles réussis, 0 échec, 6 exceptions justifiées**.
+
+| Ressource | Contrôle ignoré | Justification | Preuve |
+|---|---|---|---|
+| bucket de l'état et des journaux | `CKV_AWS_144` (réplication inter-régions) | la réplication exige un rôle IAM dédié, interdit dans le lab, qui est en outre limité à `us-east-1` | le versioning permet la restauration (test `etat_protege`) |
+| bucket de l'état et des journaux | `CKV2_AWS_62` (notifications d'événements) | aucun consommateur de notifications | modifications tracées par le versioning et les journaux d'accès (test `etat_protege`) |
+| bucket des journaux | `CKV_AWS_18` (journalisation des accès) | un bucket de journaux ne peut pas journaliser ses propres accès (boucle infinie) | accès public bloqué et HTTPS obligatoire (test `journaux_proteges`) |
+| bucket des journaux | `CKV_AWS_145` (chiffrement KMS) | AWS ne livre les journaux d'accès S3 que dans un bucket chiffré en SSE-S3 | chiffrement AES-256 vérifié (test `journaux_proteges`) |
+
+Chaque exception est commentée dans le code (`#checkov:skip=…` avec sa raison), documentée ici, et couverte par un test de `infra/bootstrap/tests/bootstrap.tftest.hcl`.
 
 ## Stockage sécurisé des mots de passe
 

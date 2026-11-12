@@ -161,3 +161,43 @@ jobs:
           --input /work/image.tar
           --ignore DKL-DI-0005
           --exit-code 1 --exit-level warn
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure as Code (Terraform)
+  # ---------------------------------------------------------------------------
+  iac-terraform:
+    name: IaC Terraform (fmt, validate, test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Aucun identifiant AWS : init sans backend, tests avec fournisseur
+      # simulé. Les fournisseurs téléchargés sont vérifiés par les empreintes
+      # du fichier .terraform.lock.hcl versionné.
+      - name: Format, validation et tests de chaque module
+        run: >
+          docker run --rm -v "$PWD:/w" -w /w/infra
+          --entrypoint sh hashicorp/terraform:1.17.1 -c '
+          set -e;
+          terraform fmt -check -recursive -diff;
+          for d in */; do
+          echo "== $d";
+          terraform -chdir="$d" init -backend=false -input=false -lockfile=readonly;
+          terraform -chdir="$d" validate;
+          terraform -chdir="$d" test;
+          done'
+
+  iac-checkov:
+    name: IaC (Checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Chaque exception (#checkov:skip) est justifiée dans le code Terraform
+      # et dans le README, et couverte par un test terraform test.
+      - name: Mauvaises configurations de l'infrastructure
+        run: >
+          docker run --rm -v "$PWD:/w" -w /w bridgecrew/checkov:3.4.4
+          -d infra --framework terraform --compact

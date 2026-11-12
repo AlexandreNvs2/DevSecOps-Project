@@ -29,7 +29,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 
 - GitHub : https://github.com/AlexandreNvs2/DevSecOps-Project, CI/CD avec **GitHub Actions** (le cours utilisait GitLab ; choix assumé et documenté).
 - Ruleset `protect-main` sur `main`, sans aucune exception : PR obligatoire (0 approbation, projet réalisé seul), **commits signés** (SSH ed25519), pas de force push ni de suppression, discussions résolues, fusion par merge ou squash (pas de rebase), branche à jour et **checks obligatoires**.
-- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)` (10 checks, vérifié le 12 novembre 2026).
+- Checks obligatoires actuels : `Lint (Flake8)`, `SAST (Bandit)`, `SAST (Semgrep)`, `SCA (pip-audit)`, `Lint Dockerfile (Hadolint)`, `Build (image Docker)`, `Tests du conteneur`, `Scan image (Trivy)`, `Scan image (Dockle)`, `Tests unitaires (pytest)` (10 checks, vérifié le 12 novembre 2026). **À ajouter** après fusion de `feat/terraform-backend` : `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)`.
 - Dependabot actif (pip, image Docker, actions GitHub).
 
 ## Architecture actuelle
@@ -42,6 +42,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 - `Dockerfile` : multi-étapes, `python:3.15.0-slim-trixie` figé par digest, utilisateur 10001 non root, pip retiré, setuid retirés, `zlib1g`, `apt` et `libapt-pkg7.0` corrigés figés, `HEALTHCHECK`.
 - `.github/workflows/ci.yml` : 10 jobs, actions figées par SHA, outils figés par version, `persist-credentials: false`, `concurrency`.
 - Tests : `tests/unit/` (pytest, 14 tests) et `tests/container/smoke_test.sh` (conteneur lancé en lecture seule, sans capacités).
+- `infra/bootstrap/` : Terraform du bucket S3 de l'état (KMS, versioning, journaux d'accès, HTTPS obligatoire), état local non versionné ; tests `terraform test` avec `mock_provider`. Jobs CI `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)` (Checkov 3.4.4 en Docker, 6 exceptions justifiées).
 
 Lancer en local :
 
@@ -66,7 +67,7 @@ Conséquences : utiliser `LabRole` comme rôle d'exécution et de tâche ECS ; p
 
 ## Prochaines étapes
 
-1. **Déploiement AWS** (critères 1 et 4), en Terraform, scanné par Checkov :
+1. **Déploiement AWS** (critères 1 et 4), en Terraform, scanné par Checkov, en 3 PR (plan détaillé dans le README) : `feat/terraform-backend` (fait : bucket d'état, jobs IaC ; reste à lancer `terraform apply` dans `infra/bootstrap`), `feat/aws-infra`, `ci/deploy`. Choix validés : un seul NAT (budget), mot de passe RDS géré par AWS (`manage_master_user_password`, l'app construira l'URL depuis `DB_HOST`/`DB_USER`/`DB_PASSWORD` si `DATABASE_URL` absente), `SECRET_KEY` générée par Terraform dans Secrets Manager, `terraform destroy` en fin de session.
    - VPC sur 2 zones, sous-réseaux publics (ALB) et privés (ECS, RDS), NAT ;
    - ALB en HTTPS (certificat auto-signé importé dans ACM), WAF avec règle de limitation de débit sur `/login` ;
    - ECS Fargate, 2 tâches sur 2 zones, security group n'acceptant que l'ALB ;
