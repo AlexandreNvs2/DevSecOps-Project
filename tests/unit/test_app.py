@@ -1,4 +1,6 @@
 """Tests unitaires : vérification de mot de passe, comptes, hachage."""
+import re
+
 from argon2 import PasswordHasher
 from sqlalchemy import select
 
@@ -20,6 +22,16 @@ def login(client, username, password=STRONG):
     return client.post("/login", data={
         "username": username, "password": password,
     })
+
+
+def without_csrf_token(html):
+    """Page sans la valeur du jeton CSRF.
+
+    Le jeton est signé avec un horodatage à la seconde : deux réponses
+    identiques mais servies à des secondes différentes ne diffèrent que par
+    lui (et chaque connexion dure environ 0,5 s à cause d'Argon2id).
+    """
+    return re.sub(rb'name="csrf_token" value="[^"]*"', b"csrf_token", html)
 
 
 def stored_hash(username):
@@ -110,7 +122,9 @@ def test_login_wrong_password_and_unknown_user_same_answer(client, username):
     wrong = login(client, username, password=STRONG + "x")
     unknown = login(client, "inconnu_" + username)
     assert wrong.status_code == unknown.status_code == 401
-    assert wrong.data == unknown.data
+    # Pages identiques, au jeton CSRF près (horodaté, voir without_csrf_token).
+    assert b'name="csrf_token" value="' in wrong.data
+    assert without_csrf_token(wrong.data) == without_csrf_token(unknown.data)
 
 
 def test_logout_clears_session(client, username):
