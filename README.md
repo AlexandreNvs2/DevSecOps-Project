@@ -25,7 +25,7 @@ Challenge final DevSecOps : intégrer et déployer de manière sécurisée une a
 - `.dockerignore` : liste blanche des fichiers envoyés au build Docker.
 - `tests/unit/` : tests unitaires (pytest).
 - `tests/container/smoke_test.sh` : tests de fonctionnement et de sécurité du conteneur.
-- `infra/bootstrap/` : Terraform du stockage de l'état Terraform (bucket S3 chiffré, clé KMS, journaux d'accès) et ses tests.
+- `infra/bootstrap/` : stockage de l'état Terraform : script de création des buckets S3 (`create-buckets.sh`), Terraform de leur configuration de sécurité (clé KMS, chiffrement, versioning, journaux d'accès) et ses tests.
 - `.github/workflows/ci.yml` : pipeline CI GitHub Actions.
 - `.github/dependabot.yml` : mises à jour automatiques des dépendances, de l'image de base, des actions et des fournisseurs Terraform.
 - `CLAUDE.md` : contexte du projet pour l'assistant IA Claude Code (règles de travail, état d'avancement, contraintes AWS). Il permet de reprendre le travail sur une autre machine et documente de façon transparente l'usage de l'IA : l'assistant a rédigé le code et la documentation en expliquant chaque choix ; les commits, les push, les fusions et la configuration GitHub ont été faits par l'auteur.
@@ -350,6 +350,7 @@ Le déploiement cible un compte **AWS Academy Learner Lab**, région `us-east-1`
 | Identifiants **temporaires** (environ 4 h), renouvelés à chaque session | stockés dans `~/.aws/credentials` en local et dans les secrets GitHub pour la pipeline, à renouveler à chaque session ; jamais écrits dans le dépôt | fédération **OIDC** GitHub → AWS : aucun identifiant stocké, jeton de courte durée par exécution |
 | Création de **rôles IAM** et de fournisseur OIDC interdite | utilisation du rôle imposé `LabRole` pour ECS ; pas de réplication S3 inter-régions | un rôle par usage (exécution ECS, tâche, déploiement), chacun limité au strict nécessaire |
 | Pas de nom de domaine | HTTPS avec un certificat **auto-signé** importé dans ACM (avertissement du navigateur) | certificat ACM validé par DNS sur un domaine de l'entreprise |
+| Une **SCP** (politique de l'organisation AWS Academy) refuse `s3:GetBucketObjectLockConfiguration` | les buckets S3 sont créés par un script AWS CLI ; Terraform applique toute leur configuration de sécurité (voir l'étape 1) | ressource `aws_s3_bucket` gérée entièrement par Terraform |
 | Budget limité | un seul NAT Gateway au lieu d'un par zone ; infrastructure détruite en fin de session (`terraform destroy`) | un NAT par zone pour la haute disponibilité |
 
 ### Architecture cible
@@ -380,7 +381,7 @@ Le déploiement est découpé en trois pull requests, chacune analysée par la p
 
 Terraform enregistre dans un **état** (*state*) la description de toute l'infrastructure qu'il gère. Cet état peut contenir des données sensibles (la `SECRET_KEY` générée, la clé privée du certificat auto-signé) : le laisser sur un poste ou le versionner dans Git serait une fuite de secrets. Il est donc stocké dans un bucket S3 dédié, partagé par le poste de développement et la pipeline.
 
-Ce bucket est créé une seule fois par le module `infra/bootstrap/`, dont l'état reste local (il ne contient aucun secret, et ce module ne peut pas stocker son état dans un bucket qui n'existe pas encore).
+Ce bucket est mis en place une seule fois par `infra/bootstrap/`, dont l'état reste local (il ne contient aucun secret, et ce module ne peut pas stocker son état dans un bucket qui n'existe pas encore).
 
 | Mesure | Détail | Pourquoi |
 |---|---|---|
@@ -390,16 +391,36 @@ Ce bucket est créé une seule fois par le module `infra/bootstrap/`, dont l'ét
 | **HTTPS obligatoire** | politique refusant toute requête avec `aws:SecureTransport = false` | pas d'interception de l'état en transit |
 | **Journaux d'accès** | bucket de journaux séparé, conservés 1 an | chaque lecture ou écriture de l'état est tracée |
 | **Verrouillage** | verrouillage natif S3 (`use_lockfile`, Terraform ≥ 1.10) | deux `terraform apply` simultanés (poste et CI) ne peuvent pas corrompre l'état |
-| Protection contre la suppression | `prevent_destroy` | un `terraform destroy` ne peut pas effacer l'état par erreur |
+| Protection contre la suppression | buckets hors du périmètre de Terraform ; `prevent_destroy` sur la clé KMS | un `terraform destroy` ne peut ni effacer l'état, ni supprimer la clé sans laquelle il serait illisible |
 | Nom sans donnée du compte dans le dépôt | numéro de compte lu à l'exécution (`aws_caller_identity`) | aucune information du compte AWS n'est versionnée |
 
-Création (une seule fois, identifiants du lab chargés) :
+Mise en place (une seule fois, identifiants du lab chargés) :
 
 ```bash
 cd infra/bootstrap
+./create-buckets.sh
 terraform init
 terraform apply
 ```
+
+#### Correction : refus d'une SCP du Learner Lab
+
+La première version créait les buckets avec la ressource Terraform `aws_s3_bucket`. Au premier `terraform apply`, la clé KMS a été créée, puis les deux buckets ont échoué :
+
+```text
+Error: reading S3 Bucket (devsecops-tfstate-…) object lock configuration:
+AccessDenied: … is not authorized to perform: s3:GetBucketObjectLockConfiguration
+… with an explicit deny in a service control policy
+```
+
+Le fournisseur Terraform AWS relit la configuration *Object Lock* de chaque bucket qu'il gère, après la création puis à chaque `plan`. Une **SCP** (*Service Control Policy*) de l'organisation AWS Academy refuse explicitement cette lecture : aucune permission IAM ne peut lever ce refus, et l'option n'est pas désactivable dans le fournisseur. Les buckets avaient bien été créés, mais marqués *tainted* (à recréer) dans l'état.
+
+Correction :
+
+- les buckets sont créés par `create-buckets.sh` (AWS CLI, idempotent : un bucket existant n'est pas recréé). Un bucket S3 neuf a par défaut l'accès public bloqué, les ACL désactivées et un chiffrement SSE-S3 ;
+- Terraform applique ensuite **toute** la configuration de sécurité (chiffrement KMS, versioning, politiques, journaux, cycle de vie), dont la lecture est autorisée par la SCP ;
+- les deux buckets *tainted* ont été retirés de l'état (`terraform state rm`), sans être supprimés d'AWS ;
+- effet de bord positif : Terraform ne gérant plus les buckets, un `terraform destroy` ne peut pas les supprimer.
 
 ### Sécurité de l'Infrastructure as Code dans la CI
 
@@ -412,16 +433,18 @@ Deux jobs analysent le dossier `infra/` à chaque pull request, sans aucun ident
 
 Les fournisseurs Terraform sont figés par version et par **empreinte** dans `.terraform.lock.hcl` (versionné, vérifié avec `-lockfile=readonly`) : un fournisseur modifié sur le registre serait refusé. Dependabot propose leurs mises à jour.
 
-Résultat Checkov sur le module `bootstrap` : **36 contrôles réussis, 0 échec, 6 exceptions justifiées**.
+Résultat Checkov sur le module `bootstrap` : **21 contrôles réussis, 0 échec, 0 exception**.
 
-| Ressource | Contrôle ignoré | Justification | Preuve |
-|---|---|---|---|
-| bucket de l'état et des journaux | `CKV_AWS_144` (réplication inter-régions) | la réplication exige un rôle IAM dédié, interdit dans le lab, qui est en outre limité à `us-east-1` | le versioning permet la restauration (test `etat_protege`) |
-| bucket de l'état et des journaux | `CKV2_AWS_62` (notifications d'événements) | aucun consommateur de notifications | modifications tracées par le versioning et les journaux d'accès (test `etat_protege`) |
-| bucket des journaux | `CKV_AWS_18` (journalisation des accès) | un bucket de journaux ne peut pas journaliser ses propres accès (boucle infinie) | accès public bloqué et HTTPS obligatoire (test `journaux_proteges`) |
-| bucket des journaux | `CKV_AWS_145` (chiffrement KMS) | AWS ne livre les journaux d'accès S3 que dans un bucket chiffré en SSE-S3 | chiffrement AES-256 vérifié (test `journaux_proteges`) |
+Limite assumée : la plupart des contrôles S3 de Checkov s'appliquent à la ressource `aws_s3_bucket`, absente depuis la correction ci-dessus. La première version, qui l'utilisait, obtenait 36 contrôles réussis et 6 exceptions justifiées (réplication inter-régions impossible sans rôle IAM, pas de consommateur de notifications, bucket de journaux qui ne peut pas se journaliser lui-même ni être chiffré en KMS). Les garanties que Checkov vérifiait sur le bucket sont désormais **prouvées par les tests** de `infra/bootstrap/tests/bootstrap.tftest.hcl` :
 
-Chaque exception est commentée dans le code (`#checkov:skip=…` avec sa raison), documentée ici, et couverte par un test de `infra/bootstrap/tests/bootstrap.tftest.hcl`.
+| Garantie | Test |
+|---|---|
+| nom du bucket dérivé du numéro de compte | `etat_protege` |
+| versioning activé, chiffrement KMS, rotation de la clé | `etat_protege` |
+| accès public bloqué (4 options), ACL désactivées | `etat_protege`, `journaux_proteges` |
+| accès hors HTTPS refusés | `etat_protege`, `journaux_proteges` |
+| accès à l'état journalisés | `etat_protege` |
+| journaux chiffrés (SSE-S3) et écrits uniquement par le service de journalisation pour le bucket de l'état | `journaux_proteges` |
 
 ## Stockage sécurisé des mots de passe
 

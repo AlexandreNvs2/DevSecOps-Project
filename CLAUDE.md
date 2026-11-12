@@ -42,7 +42,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 - `Dockerfile` : multi-étapes, `python:3.15.0-slim-trixie` figé par digest, utilisateur 10001 non root, pip retiré, setuid retirés, `zlib1g`, `apt` et `libapt-pkg7.0` corrigés figés, `HEALTHCHECK`.
 - `.github/workflows/ci.yml` : 10 jobs, actions figées par SHA, outils figés par version, `persist-credentials: false`, `concurrency`.
 - Tests : `tests/unit/` (pytest, 14 tests) et `tests/container/smoke_test.sh` (conteneur lancé en lecture seule, sans capacités).
-- `infra/bootstrap/` : Terraform du bucket S3 de l'état (KMS, versioning, journaux d'accès, HTTPS obligatoire), état local non versionné ; tests `terraform test` avec `mock_provider`. Jobs CI `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)` (Checkov 3.4.4 en Docker, 6 exceptions justifiées).
+- `infra/bootstrap/` : buckets S3 de l'état créés par `create-buckets.sh` (AWS CLI), configuration de sécurité par Terraform (KMS, versioning, journaux d'accès, HTTPS obligatoire), état local non versionné ; tests `terraform test` avec `mock_provider`. Jobs CI `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)` (Checkov 3.4.4 en Docker, 0 exception).
 
 Lancer en local :
 
@@ -59,7 +59,7 @@ AWS Academy **Learner Lab** (rôle `voclabs`), région **us-east-1**. Identifian
 
 | Autorisé | Refusé |
 |---|---|
-| ECS (Fargate), ECR, ELB (ALB), VPC, security groups, NAT, EC2 (t3.micro à t3.large), Secrets Manager, KMS, WAF, ACM (demande et import), CloudWatch Logs, S3 | création de rôles IAM, fournisseur OIDC, App Runner |
+| ECS (Fargate), ECR, ELB (ALB), VPC, security groups, NAT, EC2 (t3.micro à t3.large), Secrets Manager, KMS, WAF, ACM (demande et import), CloudWatch Logs, S3 | création de rôles IAM, fournisseur OIDC, App Runner, `s3:GetBucketObjectLockConfiguration` (SCP) : **ne jamais utiliser la ressource `aws_s3_bucket`**, créer les buckets en AWS CLI |
 | RDS sur petites classes (`db.t3.micro` testé) | |
 | `iam:PassRole` uniquement sur **`LabRole`** (accepté par ecs-tasks, ec2, rds, secretsmanager…) | |
 
@@ -67,7 +67,7 @@ Conséquences : utiliser `LabRole` comme rôle d'exécution et de tâche ECS ; p
 
 ## Prochaines étapes
 
-1. **Déploiement AWS** (critères 1 et 4), en Terraform, scanné par Checkov, en 3 PR (plan détaillé dans le README) : `feat/terraform-backend` (fait : bucket d'état, jobs IaC ; reste à lancer `terraform apply` dans `infra/bootstrap`), `feat/aws-infra`, `ci/deploy`. Choix validés : un seul NAT (budget), mot de passe RDS géré par AWS (`manage_master_user_password`, l'app construira l'URL depuis `DB_HOST`/`DB_USER`/`DB_PASSWORD` si `DATABASE_URL` absente), `SECRET_KEY` générée par Terraform dans Secrets Manager, `terraform destroy` en fin de session.
+1. **Déploiement AWS** (critères 1 et 4), en Terraform, scanné par Checkov, en 3 PR (plan détaillé dans le README) : `feat/terraform-backend` (fusionnée, PR #10) puis `fix/bootstrap-s3-scp` (contournement de la SCP Object Lock ; reste à lancer `state rm`, `create-buckets.sh`, `terraform apply`), `feat/aws-infra`, `ci/deploy`. Choix validés : un seul NAT (budget), mot de passe RDS géré par AWS (`manage_master_user_password`, l'app construira l'URL depuis `DB_HOST`/`DB_USER`/`DB_PASSWORD` si `DATABASE_URL` absente), `SECRET_KEY` générée par Terraform dans Secrets Manager, `terraform destroy` en fin de session.
    - VPC sur 2 zones, sous-réseaux publics (ALB) et privés (ECS, RDS), NAT ;
    - ALB en HTTPS (certificat auto-signé importé dans ACM), WAF avec règle de limitation de débit sur `/login` ;
    - ECS Fargate, 2 tâches sur 2 zones, security group n'acceptant que l'ALB ;
