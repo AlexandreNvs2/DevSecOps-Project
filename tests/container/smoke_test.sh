@@ -64,12 +64,12 @@ ok "code en lecture seule"
 # 5b. Cache apt vide (justifie l'exception Dockle DKL-DI-0005).
 # (« ; true » : find renvoie une erreur sur les dossiers illisibles par
 # l'utilisateur non root, ce qui ne doit pas interrompre le script.)
-apt_files="$(docker exec "$NAME" sh -c 'find /var/lib/apt/lists -type f ! -name lock 2>/dev/null; true' | wc -l)"
+apt_files="$(docker exec "$NAME" sh -c 'find /var/lib/apt/lists -type f ! -name lock 2>/dev/null; true' | wc -l | tr -d ' ')"
 [ "$apt_files" = "0" ] || fail "cache apt non vide ($apt_files fichiers)"
 ok "cache apt vide"
 
 # 5c. Aucun binaire setuid/setgid dans l'image.
-suid="$(docker exec "$NAME" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null; true' | wc -l)"
+suid="$(docker exec "$NAME" sh -c 'find / -xdev -type f -perm /6000 2>/dev/null; true' | wc -l | tr -d ' ')"
 [ "$suid" = "0" ] || fail "$suid binaire(s) setuid/setgid présent(s)"
 ok "aucun binaire setuid/setgid"
 

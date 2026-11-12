@@ -27,7 +27,8 @@ LABEL org.opencontainers.image.title="password-checker" \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
-    GUNICORN_BIND=0.0.0.0:8080
+    GUNICORN_BIND=0.0.0.0:8080 \
+    GUNICORN_WORKER_TMP_DIR=/dev/shm
 
 # 1. Correctifs de sécurité Debian publiés après l'image de base, signalés
 #    HIGH par Trivy :

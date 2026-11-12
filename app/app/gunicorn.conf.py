@@ -14,6 +14,18 @@ bind = os.environ.get("GUNICORN_BIND", "127.0.0.1:8080")
 # Processus de traitement des requêtes.
 workers = int(os.environ.get("GUNICORN_WORKERS", "2"))
 
+# Fichiers de contrôle des workers (battement de cœur). Dans l'image, le
+# système de fichiers est en lecture seule : GUNICORN_WORKER_TMP_DIR vaut
+# /dev/shm, un système de fichiers en mémoire toujours inscriptible, sur
+# Docker comme sur AWS Fargate. En local, le répertoire temporaire du système.
+worker_tmp_dir = os.environ.get("GUNICORN_WORKER_TMP_DIR")
+
+# Socket de contrôle de Gunicorn (administration à chaud : workers,
+# rechargement) désactivé : inutile en production, ce serait une interface
+# d'administration de plus dans le conteneur, et elle échoue de toute façon
+# sur un système de fichiers en lecture seule.
+control_socket_disable = True
+
 # L'application est chargée une seule fois avant la création des workers :
 # les tables de la base ne sont créées qu'une fois (pas de concurrence).
 preload_app = True
