@@ -616,7 +616,7 @@ Un premier scan de l'application déployée à l'étape 2 a levé **9 avertissem
 | 10021 X-Content-Type-Options absent | `X-Content-Type-Options: nosniff` |
 | 10063 Permissions-Policy absente | caméra, micro, géolocalisation, paiement et USB désactivés |
 | 90004 Cross-Origin-Embedder-Policy absente | `Cross-Origin-Embedder-Policy: require-corp`, plus `Cross-Origin-Opener-Policy` et `Cross-Origin-Resource-Policy` en `same-origin` |
-| 10015 directives de cache à revoir | `Cache-Control: no-store` : les pages personnelles (identifiant, jeton CSRF) ne sont jamais mises en cache |
+| 10015 directives de cache à revoir | `Cache-Control: no-store, no-cache, must-revalidate` (directives recommandées par l'OWASP pour du contenu sensible en HTTPS) : les pages personnelles (identifiant, jeton CSRF) ne sont jamais mises en cache |
 | — (bonne pratique) | `Referrer-Policy: no-referrer` |
 
 Alertes ignorées, avec justification (`.zap/rules.tsv`) et preuve :
@@ -629,6 +629,22 @@ Alertes ignorées, avec justification (`.zap/rules.tsv`) et preuve :
 | 10112 gestion de session identifiée | alerte informative : ZAP signale le cookie de session | `test_session_cookie_flags` (`HttpOnly`, `SameSite=Lax`) et `test_session_cookie_secure_by_default` |
 
 Après correction, le même scan sur l'image locale : **0 échec, 0 avertissement non justifié** (les alertes 10111 et 10112 apparaissent quand le robot de ZAP atteint le formulaire de connexion). Le résultat sur l'application déployée est publié par chaque exécution du job `DAST (OWASP ZAP)`.
+
+#### Correction : le WAF bloquait le scanner
+
+Le premier déploiement par la pipeline a réussi, mais le job `DAST (OWASP ZAP)` a échoué avec des alertes pourtant corrigées (HSTS, CSP, Permissions-Policy absents). Le rapport de ZAP montrait que les pages analysées répondaient **`403 Forbidden`**, et les journaux du WAF en donnaient la cause :
+
+```text
+BLOCK  AWSManagedRulesCommonRuleSet  NoUserAgent_HEADER  /  /robots.txt  /sitemap.xml   User-Agent: (vide)
+```
+
+Le robot d'exploration de ZAP envoie ses requêtes **sans en-tête `User-Agent`**, ce que la règle AWS `NoUserAgent_HEADER` bloque. ZAP analysait donc la page de blocage du WAF, qui ne porte aucun en-tête de l'application, et non l'application. Le WAF faisait son travail : la correction porte sur le scanner, pas sur le WAF.
+
+- ZAP ajoute désormais un `User-Agent` identifiable (`DevSecOps-Project-DAST/1.0`) à **toutes** ses requêtes, avec une règle *Replacer* (`-config replacer.full_list(0)…`). Les options `connection.defaultUserAgent` et `spider.userAgent` ont été essayées et ne s'appliquent pas au robot de ZAP 2.17.
+- Deux garde-fous dans le job empêchent qu'un scan « vert » ne porte en réalité que sur des pages de blocage : avant le scan, `/login` doit répondre `200` au scanner ; après le scan, aucune page analysée ne doit être un `403`.
+- Résultat sur l'application en ligne, depuis le poste de développement : **7 URL analysées** (contre 3), dont `/login`, `/register` et `/password`, aucune réponse `403`, et une seule alerte restante, `10015`. ZAP n'émet cette alerte qu'en HTTPS, c'est pourquoi le scan local en HTTP ne l'avait pas montrée. Elle est corrigée par `Cache-Control: no-store, no-cache, must-revalidate`.
+
+Le DAST confirme aussi l'efficacité du WAF : sans identification, un outil automatisé est bloqué dès sa première requête.
 
 #### Déploiements reproductibles
 
