@@ -44,7 +44,7 @@ Challenge final DevSecOps (60 pts, environ 10 h prévues) : intégrer et déploy
 - Tests : `tests/unit/` (pytest, 22 tests) et `tests/container/smoke_test.sh` (conteneur lancé en lecture seule, sans capacités).
 - `infra/bootstrap/` (permanent) : 3 buckets S3 créés par `create-buckets.sh` (état, journaux d'accès à l'état, journaux ALB/VPC `devsecops-logs-<compte>`), leur configuration de sécurité, dépôt ECR `password-checker` (tags immuables, scan) ; état local non versionné.
 - `infra/platform/` (détruit en fin de session) : VPC 3 niveaux sur us-east-1a/b, 1 NAT, ALB HTTPS (certificat auto-signé tls → ACM), WAF (limite /login, règles gérées, HostingProviderIPList en count pour ZAP), ECS Fargate (LabRole, lecture seule, `/dev/shm` pour Gunicorn), RDS PostgreSQL 18 (`manage_master_user_password`, force_ssl), KMS, Secrets Manager ; backend S3 (`-backend-config=bucket=…`).
-- Tests `terraform test` avec `mock_provider` (bootstrap 4, platform 6). Jobs CI `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)` (Checkov 3.4.4 : 147 OK, 7 exceptions justifiées dans le README).
+- Tests `terraform test` avec `mock_provider` (bootstrap 4, platform 7). Pièges AWS vus à l'exécution : descriptions de security groups sans accent ni apostrophe (test `descriptions_aws`), `log_connections` en liste depuis PostgreSQL 18. Jobs CI `IaC Terraform (fmt, validate, test)` et `IaC (Checkov)` (Checkov 3.4.4 : 147 OK, 7 exceptions justifiées dans le README).
 
 Lancer en local :
 

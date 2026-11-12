@@ -501,7 +501,7 @@ Adaptations pour le système de fichiers en lecture seule :
 | Chiffrée | stockage, sauvegardes et Performance Insights chiffrés par la clé KMS de l'application | données illisibles sans droit sur la clé |
 | **TLS obligatoire** | paramètre `rds.force_ssl = 1` ; l'application se connecte avec `sslmode=require` | aucune donnée en clair sur le réseau |
 | Mot de passe géré par AWS | `manage_master_user_password` : généré par RDS, stocké dans Secrets Manager | Terraform ne le connaît jamais, il n'est donc pas dans l'état |
-| Journalisation sans données sensibles | `log_statement = ddl`, requêtes lentes, connexions | pas de `all` : les paramètres des requêtes (identifiants, empreintes) finiraient dans les journaux |
+| Journalisation sans données sensibles | `log_statement = ddl`, requêtes lentes, connexions (`log_connections = all`) | pas de `all` : les paramètres des requêtes (identifiants, empreintes) finiraient dans les journaux |
 | Sauvegardes | 7 jours, mises à jour mineures automatiques | restauration possible, correctifs de sécurité appliqués |
 
 Adaptation de l'application (`models.py`) : sans `DATABASE_URL`, l'adresse est construite à partir de `DB_HOST`, `DB_USER`, `DB_PASSWORD` (et `DB_NAME`, `DB_PORT`) avec `URL.create` de SQLAlchemy, qui échappe les caractères spéciaux du mot de passe généré par RDS et impose `sslmode=require`.
@@ -527,7 +527,20 @@ Résultat sur `infra/` (bootstrap et platform) : **147 contrôles réussis, 0 é
 | ALB | `CKV_AWS_150` (protection contre la suppression) | même raison ; l'ALB ne contient aucune donnée et Terraform le recrée à l'identique | — (choix de coût assumé) |
 | définition de tâche ECS | `CKV_AWS_249` (rôles d'exécution et de tâche distincts) | le lab impose `LabRole` pour les deux et interdit d'en créer d'autres ; en production, deux rôles limités au strict nécessaire | — (contrainte du lab, voir le tableau des contraintes) |
 
-Les tests de `infra/platform/tests/platform.tftest.hcl` (6 scénarios) vérifient aussi le cloisonnement réseau, l'absence de secret en clair dans la définition de tâche, le WAF et le refus d'un tag d'image autre qu'un SHA.
+Les tests de `infra/platform/tests/platform.tftest.hcl` (7 scénarios) vérifient aussi le cloisonnement réseau, l'absence de secret en clair dans la définition de tâche, le WAF et le refus d'un tag d'image autre qu'un SHA.
+
+#### Corrections issues du premier déploiement
+
+Le premier `terraform apply` a créé la plupart des ressources, puis deux erreurs renvoyées par AWS ont stoppé la création (ni Terraform ni Checkov ne les détectent avant l'exécution) :
+
+| Erreur | Cause | Correction |
+|---|---|---|
+| `InvalidParameterValue: Invalid parameter value: 1 for: log_connections` | depuis PostgreSQL 18, `log_connections` n'est plus un booléen mais une liste d'étapes (`receipt`, `authentication`, `authorization`, `setup_durations`, `all`) | valeur `all` : réception, authentification et autorisation de chaque connexion journalisées |
+| `Invalid security group description` | AWS n'accepte dans les descriptions des groupes de sécurité et de leurs règles que `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*` : l'apostrophe de « l'ALB » est refusée | descriptions reformulées ; nouveau test `descriptions_aws` qui vérifie toutes les descriptions avec l'expression régulière d'AWS (il échoue bien si l'on remet l'apostrophe) |
+
+Terraform reprend là où il s'est arrêté : un nouveau `terraform apply` ne crée que les ressources manquantes.
+
+Résultat après correction : l'application répond en **HTTPS (`200`)**, le HTTP est redirigé (`301`), la connexion est négociée en **TLS 1.3**, et les deux tâches ECS sont saines dans le groupe cible de l'ALB. Au démarrage, Gunicorn charge l'application, qui se connecte à RDS en TLS et crée la table des utilisateurs : son démarrage sans erreur prouve que le mot de passe injecté depuis Secrets Manager et la connexion chiffrée fonctionnent.
 
 #### Déployer et détruire (manuellement, avant l'étape 3)
 
@@ -545,6 +558,10 @@ docker push "$REPO:$TAG"
 cd infra/platform
 terraform init -backend-config="bucket=$(terraform -chdir=../bootstrap output -raw state_bucket)"
 terraform apply -var "image_tag=$TAG"
+
+# Pendant 1 à 2 minutes après l'apply, l'ALB répond « 503 Service Temporarily
+# Unavailable » : les tâches démarrent et n'ont pas encore passé le contrôle de
+# santé. Le navigateur affiche « Non sécurisé » (certificat auto-signé).
 
 # 3. En fin de session (budget)
 terraform destroy -var "image_tag=$TAG"
